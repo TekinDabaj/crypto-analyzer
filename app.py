@@ -6,7 +6,6 @@ Display-only - no trading execution.
 """
 
 import asyncio
-import json
 import logging
 import os
 import sys
@@ -18,8 +17,8 @@ import signal
 import ccxt
 import numpy as np
 import pandas as pd
+import pandas_ta as ta
 import psutil
-import talib
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -60,11 +59,6 @@ class MarketAnalyzer:
         self.volume_ma_period = 20
         self.obv_lookback = 14
         self.rsi_period = 14
-        
-        # Thresholds for "good" conditions
-        self.min_volume_ratio = 1.0
-        self.funding_healthy_range = (-0.01, 0.01)
-        self.rsi_healthy_range = (30, 70)
         
         # Cache
         self.cache = {}
@@ -130,82 +124,102 @@ class MarketAnalyzer:
             return 0
     
     def calculate_indicators(self, df: pd.DataFrame) -> Dict:
-        """Calculate all analysis indicators"""
+        """Calculate all analysis indicators using pandas-ta"""
         if df.empty or len(df) < 50:
             return {}
         
-        close = df['close'].values
-        high = df['high'].values
-        low = df['low'].values
-        volume = df['volume'].values
-        
-        # Current price
-        current_price = close[-1]
-        
-        # Volume analysis
-        volume_ma = np.mean(volume[-self.volume_ma_period:])
-        current_volume = volume[-1]
-        volume_ratio = current_volume / volume_ma if volume_ma > 0 else 0
-        avg_volume_24h = np.mean(volume[-24:]) if len(volume) >= 24 else volume_ma
-        
-        # OBV calculation
-        obv = talib.OBV(close, volume)
-        obv_current = obv[-1]
-        obv_prev = obv[-self.obv_lookback] if len(obv) >= self.obv_lookback else obv[0]
-        obv_change = ((obv_current - obv_prev) / abs(obv_prev) * 100) if obv_prev != 0 else 0
-        
-        # OBV trend (slope over last N periods)
-        obv_slope = np.polyfit(range(min(14, len(obv))), obv[-14:], 1)[0] if len(obv) >= 14 else 0
-        obv_trend = 'bullish' if obv_slope > 0 else 'bearish' if obv_slope < 0 else 'neutral'
-        
-        # RSI
-        rsi = talib.RSI(close, timeperiod=self.rsi_period)
-        current_rsi = rsi[-1] if not np.isnan(rsi[-1]) else 50
-        
-        # Moving averages
-        sma_20 = talib.SMA(close, 20)[-1]
-        sma_50 = talib.SMA(close, 50)[-1] if len(close) >= 50 else sma_20
-        sma_200 = talib.SMA(close, 200)[-1] if len(close) >= 200 else sma_50
-        
-        # Trend determination
-        if current_price > sma_20 > sma_50:
-            trend = 'uptrend'
-        elif current_price < sma_20 < sma_50:
-            trend = 'downtrend'
-        else:
-            trend = 'sideways'
-        
-        # Price change
-        price_change_24h = ((current_price - close[-24]) / close[-24] * 100) if len(close) >= 24 else 0
-        price_change_1h = ((current_price - close[-2]) / close[-2] * 100) if len(close) >= 2 else 0
-        
-        # ATR for volatility
-        atr = talib.ATR(high, low, close, 14)[-1]
-        atr_percent = (atr / current_price * 100) if current_price > 0 else 0
-        
-        # MACD
-        macd, macd_signal, macd_hist = talib.MACD(close)
-        macd_bullish = macd[-1] > macd_signal[-1] if not np.isnan(macd[-1]) else False
-        
-        return {
-            'price': round(current_price, 6),
-            'price_change_1h': round(price_change_1h, 2),
-            'price_change_24h': round(price_change_24h, 2),
-            'volume_current': round(current_volume, 2),
-            'volume_avg': round(volume_ma, 2),
-            'volume_ratio': round(volume_ratio, 2),
-            'volume_24h_avg': round(avg_volume_24h, 2),
-            'obv': round(obv_current, 2),
-            'obv_change': round(obv_change, 2),
-            'obv_trend': obv_trend,
-            'rsi': round(current_rsi, 2),
-            'sma_20': round(sma_20, 6),
-            'sma_50': round(sma_50, 6),
-            'sma_200': round(sma_200, 6),
-            'trend': trend,
-            'atr_percent': round(atr_percent, 2),
-            'macd_bullish': macd_bullish
-        }
+        try:
+            close = df['close']
+            high = df['high']
+            low = df['low']
+            volume = df['volume']
+            
+            # Current price
+            current_price = float(close.iloc[-1])
+            
+            # Volume analysis
+            volume_ma = float(volume.tail(self.volume_ma_period).mean())
+            current_volume = float(volume.iloc[-1])
+            volume_ratio = current_volume / volume_ma if volume_ma > 0 else 0
+            avg_volume_24h = float(volume.tail(24).mean()) if len(volume) >= 24 else volume_ma
+            
+            # OBV calculation using pandas-ta
+            obv_series = ta.obv(close, volume)
+            if obv_series is not None and len(obv_series) >= self.obv_lookback:
+                obv_current = float(obv_series.iloc[-1])
+                obv_prev = float(obv_series.iloc[-self.obv_lookback])
+                obv_change = ((obv_current - obv_prev) / abs(obv_prev) * 100) if obv_prev != 0 else 0
+                
+                # OBV trend (slope over last N periods)
+                obv_recent = obv_series.tail(14).values
+                obv_slope = np.polyfit(range(len(obv_recent)), obv_recent, 1)[0]
+                obv_trend = 'bullish' if obv_slope > 0 else 'bearish' if obv_slope < 0 else 'neutral'
+            else:
+                obv_current = 0
+                obv_change = 0
+                obv_trend = 'neutral'
+            
+            # RSI using pandas-ta
+            rsi_series = ta.rsi(close, length=self.rsi_period)
+            current_rsi = float(rsi_series.iloc[-1]) if rsi_series is not None and not pd.isna(rsi_series.iloc[-1]) else 50
+            
+            # Moving averages using pandas-ta
+            sma_20_series = ta.sma(close, length=20)
+            sma_50_series = ta.sma(close, length=50)
+            sma_200_series = ta.sma(close, length=200)
+            
+            sma_20 = float(sma_20_series.iloc[-1]) if sma_20_series is not None else current_price
+            sma_50 = float(sma_50_series.iloc[-1]) if sma_50_series is not None and len(close) >= 50 else sma_20
+            sma_200 = float(sma_200_series.iloc[-1]) if sma_200_series is not None and len(close) >= 200 else sma_50
+            
+            # Trend determination
+            if current_price > sma_20 > sma_50:
+                trend = 'uptrend'
+            elif current_price < sma_20 < sma_50:
+                trend = 'downtrend'
+            else:
+                trend = 'sideways'
+            
+            # Price change
+            price_change_24h = ((current_price - float(close.iloc[-24])) / float(close.iloc[-24]) * 100) if len(close) >= 24 else 0
+            price_change_1h = ((current_price - float(close.iloc[-2])) / float(close.iloc[-2]) * 100) if len(close) >= 2 else 0
+            
+            # ATR for volatility using pandas-ta
+            atr_series = ta.atr(high, low, close, length=14)
+            atr = float(atr_series.iloc[-1]) if atr_series is not None else 0
+            atr_percent = (atr / current_price * 100) if current_price > 0 else 0
+            
+            # MACD using pandas-ta
+            macd_df = ta.macd(close)
+            if macd_df is not None and len(macd_df.columns) >= 2:
+                macd_line = float(macd_df.iloc[-1, 0])
+                macd_signal = float(macd_df.iloc[-1, 2])
+                macd_bullish = macd_line > macd_signal
+            else:
+                macd_bullish = False
+            
+            return {
+                'price': round(current_price, 6),
+                'price_change_1h': round(price_change_1h, 2),
+                'price_change_24h': round(price_change_24h, 2),
+                'volume_current': round(current_volume, 2),
+                'volume_avg': round(volume_ma, 2),
+                'volume_ratio': round(volume_ratio, 2),
+                'volume_24h_avg': round(avg_volume_24h, 2),
+                'obv': round(obv_current, 2),
+                'obv_change': round(obv_change, 2),
+                'obv_trend': obv_trend,
+                'rsi': round(current_rsi, 2),
+                'sma_20': round(sma_20, 6),
+                'sma_50': round(sma_50, 6),
+                'sma_200': round(sma_200, 6),
+                'trend': trend,
+                'atr_percent': round(atr_percent, 2),
+                'macd_bullish': macd_bullish
+            }
+        except Exception as e:
+            logger.error(f"Error calculating indicators: {e}")
+            return {}
     
     def score_coin(self, indicators: Dict, funding_rate: float) -> Dict:
         """Score a coin based on all criteria"""
@@ -308,21 +322,19 @@ class MarketAnalyzer:
     async def analyze_coin(self, symbol: str) -> Dict:
         """Full analysis for a single coin"""
         try:
-            # Get data
             df_1h = await self.get_ohlcv(symbol, '1h', 200)
             df_4h = await self.get_ohlcv(symbol, '4h', 100)
             
             if df_1h.empty:
                 return None
             
-            # Calculate indicators
             indicators_1h = self.calculate_indicators(df_1h)
             indicators_4h = self.calculate_indicators(df_4h) if not df_4h.empty else {}
             
-            # Get funding rate
-            funding_rate = await self.get_funding_rate(symbol)
+            if not indicators_1h:
+                return None
             
-            # Score
+            funding_rate = await self.get_funding_rate(symbol)
             score_data = self.score_coin(indicators_1h, funding_rate)
             
             return {
@@ -350,14 +362,12 @@ class MarketAnalyzer:
         """Generate human-readable signals"""
         signals = []
         
-        # Volume signals
         vol_ratio = ind_1h.get('volume_ratio', 0)
         if vol_ratio >= 2.0:
             signals.append("🔥 High volume spike")
         elif vol_ratio < 0.5:
             signals.append("⚠️ Volume dried up")
         
-        # OBV signals
         obv_trend = ind_1h.get('obv_trend', 'neutral')
         obv_change = ind_1h.get('obv_change', 0)
         if obv_trend == 'bullish' and obv_change > 10:
@@ -365,14 +375,12 @@ class MarketAnalyzer:
         elif obv_trend == 'bearish' and obv_change < -10:
             signals.append("📉 OBV showing distribution")
         
-        # RSI signals
         rsi = ind_1h.get('rsi', 50)
         if rsi < 30:
             signals.append("🟢 RSI oversold")
         elif rsi > 70:
             signals.append("🔴 RSI overbought")
         
-        # Funding signals
         funding_pct = abs(funding * 100)
         if funding_pct > 0.05:
             if funding > 0:
@@ -380,7 +388,6 @@ class MarketAnalyzer:
             else:
                 signals.append("💰 High negative funding (shorts paying)")
         
-        # Trend signals
         trend_1h = ind_1h.get('trend', 'sideways')
         trend_4h = ind_4h.get('trend', 'sideways') if ind_4h else 'sideways'
         
@@ -389,7 +396,6 @@ class MarketAnalyzer:
         elif trend_1h == 'downtrend' and trend_4h == 'downtrend':
             signals.append("🚫 Aligned downtrend (1H + 4H)")
         
-        # MACD
         if ind_1h.get('macd_bullish'):
             signals.append("📊 MACD bullish crossover")
         
@@ -409,9 +415,7 @@ class MarketAnalyzer:
                 logger.error(f"Error scanning {symbol}: {e}")
                 continue
         
-        # Sort by score
         results.sort(key=lambda x: x['score']['total_score'], reverse=True)
-        
         return results
 
 
@@ -429,7 +433,6 @@ class AnalyzerApp:
             allow_headers=["*"],
         )
         
-        # State
         self.running = False
         self.scan_results = []
         self.last_scan = None
@@ -439,16 +442,7 @@ class AnalyzerApp:
         self.startup_time = datetime.now()
         
         self._setup_routes()
-        
-        signal.signal(signal.SIGINT, self._handle_shutdown)
-        signal.signal(signal.SIGTERM, self._handle_shutdown)
-        
         logger.info("Analyzer App initialized")
-    
-    def _handle_shutdown(self, signum, frame):
-        logger.info("Shutting down...")
-        self.running = False
-        sys.exit(0)
     
     def _setup_routes(self):
         @self.app.get("/")
@@ -469,7 +463,6 @@ class AnalyzerApp:
             symbol = symbol.upper()
             if not symbol.endswith('USDT'):
                 symbol += 'USDT'
-            
             result = await self.analyzer.analyze_coin(symbol)
             if result:
                 return JSONResponse(content=result)
@@ -478,10 +471,7 @@ class AnalyzerApp:
         @self.app.get("/api/top")
         async def get_top_coins():
             top = [r for r in self.scan_results if r['score']['percentage'] >= 70]
-            return JSONResponse(content={
-                'top_coins': top,
-                'count': len(top)
-            })
+            return JSONResponse(content={'top_coins': top, 'count': len(top)})
         
         @self.app.get("/api/status")
         async def get_status():
@@ -505,17 +495,11 @@ class AnalyzerApp:
         async def websocket_endpoint(websocket: WebSocket):
             await websocket.accept()
             self.websockets.add(websocket)
-            
             try:
-                await websocket.send_json({
-                    'type': 'connected',
-                    'message': 'Connected to analyzer'
-                })
-                
+                await websocket.send_json({'type': 'connected', 'message': 'Connected to analyzer'})
                 while True:
                     await asyncio.sleep(30)
                     await websocket.send_json({'type': 'heartbeat'})
-                    
             except WebSocketDisconnect:
                 self.websockets.discard(websocket)
     
@@ -529,37 +513,29 @@ class AnalyzerApp:
         self.websockets -= disconnected
     
     async def _run_scan(self):
-        """Execute market scan"""
         logger.info("Starting market scan...")
-        
         try:
             results = await self.analyzer.scan_all()
             self.scan_results = results
             self.last_scan = datetime.now()
             self.scan_count += 1
-            
             top_coins = [r for r in results if r['score']['percentage'] >= 75]
-            
-            logger.info(f"Scan #{self.scan_count} complete: {len(results)} coins analyzed, {len(top_coins)} high score")
-            
+            logger.info(f"Scan #{self.scan_count} complete: {len(results)} coins, {len(top_coins)} high score")
             await self._broadcast({
                 'type': 'scan_complete',
                 'scan_count': self.scan_count,
                 'coins_analyzed': len(results),
                 'top_coins': len(top_coins)
             })
-            
         except Exception as e:
             logger.error(f"Scan error: {e}")
     
     async def scan_loop(self):
-        """Main scanning loop"""
         while self.running:
             await self._run_scan()
             await asyncio.sleep(self.scan_interval)
     
     def _get_dashboard_html(self) -> str:
-        """Return dashboard HTML"""
         try:
             with open('templates/dashboard.html', 'r') as f:
                 return f.read()
@@ -567,7 +543,6 @@ class AnalyzerApp:
             return "<html><body><h1>Dashboard template not found</h1></body></html>"
 
 
-# Global instance
 app_instance = None
 
 def get_app():
@@ -590,14 +565,6 @@ async def shutdown():
     get_app().running = False
     logger.info("Market Analyzer stopped")
 
-
 if __name__ == "__main__":
     os.makedirs("templates", exist_ok=True)
-    
-    uvicorn.run(
-        "app:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=False,
-        log_level="info"
-    )
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False, log_level="info")
