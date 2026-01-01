@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-Crypto Market Analyzer
+Crypto Market Analyzer - Binance Version
 Scans the market for coins with good spot volume, healthy OBV, reasonable funding rates, and RSI levels.
-Display-only - no trading execution.
 """
 
 import asyncio
@@ -12,7 +11,6 @@ import sys
 import time
 from datetime import datetime
 from typing import Dict, List, Set
-import signal
 
 import ccxt
 import numpy as np
@@ -27,7 +25,6 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 load_dotenv()
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -40,57 +37,50 @@ logger = logging.getLogger(__name__)
 
 
 class MarketAnalyzer:
-    """Core market analysis engine"""
-    
     def __init__(self):
         self.exchange = self._init_exchange()
         
-        # Coins to analyze - liquid pairs
         self.coins = [
-            'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
-            'ADAUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT', 'MATICUSDT',
-            'ATOMUSDT', 'NEARUSDT', 'APTUSDT', 'ARBUSDT', 'OPUSDT',
-            'SUIUSDT', 'INJUSDT', 'FETUSDT', 'TIAUSDT', 'SEIUSDT',
-            'DOGEUSDT', 'PEPEUSDT', 'WIFUSDT', 'SHIBUSDT', 'LTCUSDT',
-            'BCHUSDT', 'ETCUSDT', 'FILUSDT', 'IMXUSDT', 'RENDERUSDT'
+            'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT',
+            'ADA/USDT', 'AVAX/USDT', 'DOT/USDT', 'LINK/USDT', 'MATIC/USDT',
+            'ATOM/USDT', 'NEAR/USDT', 'APT/USDT', 'ARB/USDT', 'OP/USDT',
+            'SUI/USDT', 'INJ/USDT', 'FET/USDT', 'TIA/USDT', 'SEI/USDT',
+            'DOGE/USDT', 'PEPE/USDT', 'WIF/USDT', 'SHIB/USDT', 'LTC/USDT',
+            'BCH/USDT', 'ETC/USDT', 'FIL/USDT', 'IMX/USDT', 'RENDER/USDT'
         ]
         
-        # Analysis parameters
         self.volume_ma_period = 20
         self.obv_lookback = 14
         self.rsi_period = 14
         
-        # Cache
         self.cache = {}
         self.cache_duration = 60
         
         logger.info(f"Market Analyzer initialized with {len(self.coins)} coins")
     
     def _init_exchange(self) -> ccxt.Exchange:
-        """Initialize Bybit connection"""
-        api_key = os.getenv('BYBIT_API_KEY', '')
-        secret_key = os.getenv('BYBIT_SECRET_KEY', '')
+        api_key = os.getenv('BINANCE_API_KEY', '')
+        secret_key = os.getenv('BINANCE_SECRET_KEY', '')
         
-        exchange = ccxt.bybit({
+        exchange = ccxt.binance({
             'apiKey': api_key,
             'secret': secret_key,
             'enableRateLimit': True,
             'options': {
-                'defaultType': 'linear',
+                'defaultType': 'future',
                 'adjustForTimeDifference': True
             }
         })
         
         try:
             exchange.load_markets()
-            logger.info(f"Connected to Bybit - {len(exchange.markets)} markets")
+            logger.info(f"Connected to Binance - {len(exchange.markets)} markets")
         except Exception as e:
-            logger.error(f"Failed to connect to Bybit: {e}")
+            logger.error(f"Failed to connect to Binance: {e}")
         
         return exchange
     
     async def get_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 200) -> pd.DataFrame:
-        """Fetch OHLCV data"""
         cache_key = f"{symbol}_{timeframe}_{limit}"
         now = time.time()
         
@@ -116,7 +106,6 @@ class MarketAnalyzer:
             return pd.DataFrame()
     
     async def get_funding_rate(self, symbol: str) -> float:
-        """Get current funding rate"""
         try:
             funding = self.exchange.fetch_funding_rate(symbol)
             return funding.get('fundingRate', 0) or 0
@@ -124,7 +113,6 @@ class MarketAnalyzer:
             return 0
     
     def calculate_indicators(self, df: pd.DataFrame) -> Dict:
-        """Calculate all analysis indicators using pandas-ta"""
         if df.empty or len(df) < 50:
             return {}
         
@@ -134,23 +122,18 @@ class MarketAnalyzer:
             low = df['low']
             volume = df['volume']
             
-            # Current price
             current_price = float(close.iloc[-1])
             
-            # Volume analysis
             volume_ma = float(volume.tail(self.volume_ma_period).mean())
             current_volume = float(volume.iloc[-1])
             volume_ratio = current_volume / volume_ma if volume_ma > 0 else 0
             avg_volume_24h = float(volume.tail(24).mean()) if len(volume) >= 24 else volume_ma
             
-            # OBV calculation using pandas-ta
             obv_series = ta.obv(close, volume)
             if obv_series is not None and len(obv_series) >= self.obv_lookback:
                 obv_current = float(obv_series.iloc[-1])
                 obv_prev = float(obv_series.iloc[-self.obv_lookback])
                 obv_change = ((obv_current - obv_prev) / abs(obv_prev) * 100) if obv_prev != 0 else 0
-                
-                # OBV trend (slope over last N periods)
                 obv_recent = obv_series.tail(14).values
                 obv_slope = np.polyfit(range(len(obv_recent)), obv_recent, 1)[0]
                 obv_trend = 'bullish' if obv_slope > 0 else 'bearish' if obv_slope < 0 else 'neutral'
@@ -159,11 +142,9 @@ class MarketAnalyzer:
                 obv_change = 0
                 obv_trend = 'neutral'
             
-            # RSI using pandas-ta
             rsi_series = ta.rsi(close, length=self.rsi_period)
             current_rsi = float(rsi_series.iloc[-1]) if rsi_series is not None and not pd.isna(rsi_series.iloc[-1]) else 50
             
-            # Moving averages using pandas-ta
             sma_20_series = ta.sma(close, length=20)
             sma_50_series = ta.sma(close, length=50)
             sma_200_series = ta.sma(close, length=200)
@@ -172,7 +153,6 @@ class MarketAnalyzer:
             sma_50 = float(sma_50_series.iloc[-1]) if sma_50_series is not None and len(close) >= 50 else sma_20
             sma_200 = float(sma_200_series.iloc[-1]) if sma_200_series is not None and len(close) >= 200 else sma_50
             
-            # Trend determination
             if current_price > sma_20 > sma_50:
                 trend = 'uptrend'
             elif current_price < sma_20 < sma_50:
@@ -180,16 +160,13 @@ class MarketAnalyzer:
             else:
                 trend = 'sideways'
             
-            # Price change
             price_change_24h = ((current_price - float(close.iloc[-24])) / float(close.iloc[-24]) * 100) if len(close) >= 24 else 0
             price_change_1h = ((current_price - float(close.iloc[-2])) / float(close.iloc[-2]) * 100) if len(close) >= 2 else 0
             
-            # ATR for volatility using pandas-ta
             atr_series = ta.atr(high, low, close, length=14)
             atr = float(atr_series.iloc[-1]) if atr_series is not None else 0
             atr_percent = (atr / current_price * 100) if current_price > 0 else 0
             
-            # MACD using pandas-ta
             macd_df = ta.macd(close)
             if macd_df is not None and len(macd_df.columns) >= 2:
                 macd_line = float(macd_df.iloc[-1, 0])
@@ -222,12 +199,10 @@ class MarketAnalyzer:
             return {}
     
     def score_coin(self, indicators: Dict, funding_rate: float) -> Dict:
-        """Score a coin based on all criteria"""
         score = 0
         max_score = 100
         details = []
         
-        # Volume score (0-25 points)
         volume_ratio = indicators.get('volume_ratio', 0)
         if volume_ratio >= 2.0:
             score += 25
@@ -244,7 +219,6 @@ class MarketAnalyzer:
         else:
             details.append(('volume', 'very_low', 0))
         
-        # OBV score (0-25 points)
         obv_change = indicators.get('obv_change', 0)
         obv_trend = indicators.get('obv_trend', 'neutral')
         
@@ -264,7 +238,6 @@ class MarketAnalyzer:
             score += 15
             details.append(('obv', 'neutral', 15))
         
-        # Funding rate score (0-25 points)
         funding_pct = funding_rate * 100
         if -0.005 <= funding_pct <= 0.005:
             score += 25
@@ -282,7 +255,6 @@ class MarketAnalyzer:
             score += 5
             details.append(('funding', 'extreme', 5))
         
-        # RSI score (0-25 points)
         rsi = indicators.get('rsi', 50)
         if 40 <= rsi <= 60:
             score += 25
@@ -320,7 +292,6 @@ class MarketAnalyzer:
             return 'F'
     
     async def analyze_coin(self, symbol: str) -> Dict:
-        """Full analysis for a single coin"""
         try:
             df_1h = await self.get_ohlcv(symbol, '1h', 200)
             df_4h = await self.get_ohlcv(symbol, '4h', 100)
@@ -337,9 +308,11 @@ class MarketAnalyzer:
             funding_rate = await self.get_funding_rate(symbol)
             score_data = self.score_coin(indicators_1h, funding_rate)
             
+            display_name = symbol.replace('/USDT', '').replace('USDT', '')
+            
             return {
                 'symbol': symbol,
-                'display_name': symbol.replace('USDT', ''),
+                'display_name': display_name,
                 'timestamp': datetime.now().isoformat(),
                 'price': indicators_1h.get('price', 0),
                 'price_change_1h': indicators_1h.get('price_change_1h', 0),
@@ -359,7 +332,6 @@ class MarketAnalyzer:
             return None
     
     def _generate_signals(self, ind_1h: Dict, ind_4h: Dict, funding: float) -> List[str]:
-        """Generate human-readable signals"""
         signals = []
         
         vol_ratio = ind_1h.get('volume_ratio', 0)
@@ -402,7 +374,6 @@ class MarketAnalyzer:
         return signals if signals else ["➖ No significant signals"]
     
     async def scan_all(self) -> List[Dict]:
-        """Scan all coins"""
         results = []
         
         for symbol in self.coins:
@@ -410,7 +381,7 @@ class MarketAnalyzer:
                 result = await self.analyze_coin(symbol)
                 if result:
                     results.append(result)
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.2)
             except Exception as e:
                 logger.error(f"Error scanning {symbol}: {e}")
                 continue
@@ -420,8 +391,6 @@ class MarketAnalyzer:
 
 
 class AnalyzerApp:
-    """FastAPI application for the dashboard"""
-    
     def __init__(self):
         self.analyzer = MarketAnalyzer()
         self.app = FastAPI(title="Crypto Market Analyzer", version="1.0.0")
@@ -461,8 +430,8 @@ class AnalyzerApp:
         @self.app.get("/api/coin/{symbol}")
         async def get_coin_detail(symbol: str):
             symbol = symbol.upper()
-            if not symbol.endswith('USDT'):
-                symbol += 'USDT'
+            if '/' not in symbol:
+                symbol = symbol.replace('USDT', '') + '/USDT'
             result = await self.analyzer.analyze_coin(symbol)
             if result:
                 return JSONResponse(content=result)
