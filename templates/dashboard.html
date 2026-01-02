@@ -130,7 +130,6 @@
       <div class="header-stat"><span>Scans:</span><strong id="scan-count">0</strong></div>
       <div class="header-stat"><span>Updated:</span><strong id="last-scan">--:--</strong></div>
       <button class="btn" onclick="triggerScan()">Scan Now</button>
-      <button class="btn btn-secondary" onclick="openAddCoinModal()">+ Add Coins</button>
       <div class="dropdown">
         <div class="user-menu" onclick="toggleDropdown()">
           <img class="user-avatar" id="user-avatar" src="" alt="">
@@ -290,7 +289,7 @@ function applyFilters(){
 function renderTable(coins){
   const el=document.getElementById("table-container");
   if(!coins.length){el.innerHTML='<div class="empty-state">No coins match criteria</div>';return}
-  el.innerHTML='<table class="coins-table"><thead><tr><th>Coin</th><th>Price</th><th>24h</th><th>OBV</th><th>Funding</th><th>Score</th><th>Signals</th><th></th></tr></thead><tbody>'+
+  el.innerHTML='<table class="coins-table"><thead><tr><th>Coin</th><th>Price</th><th>24h</th><th>OBV</th><th>Funding</th><th>Score</th><th>Signals</th><th style="text-align:right"><button class="btn btn-secondary" onclick="event.stopPropagation();openAddCoinModal()">+ Add Coins</button></th></tr></thead><tbody>'+
     coins.map(c=>{
       const i=c.indicators["1h"];
       const oc=i.obv_trend==="bullish"?"positive":i.obv_trend==="bearish"?"negative":"";
@@ -362,6 +361,8 @@ async function loadMore(){
 
 function closeModal(){document.getElementById("detail-modal").classList.remove("active")}
 
+let searchResults=[],searchTimeout=null;
+
 async function openAddCoinModal(){
   document.getElementById("add-coin-modal").classList.add("active");
   const body=document.getElementById("add-coin-body");
@@ -369,29 +370,66 @@ async function openAddCoinModal(){
   try{
     const r=await(await fetch("/api/coins/available")).json();
     allAvailable=r.coins||[];
+    searchResults=[];
     renderAddCoin();
   }catch(e){body.innerHTML='<div class="empty-state">Error</div>'}
 }
 
 function renderAddCoin(){
   const body=document.getElementById("add-coin-body");
-  body.innerHTML='<div class="add-coin-section"><h3>Click to add/remove coins from your watchlist</h3><div class="add-coin-grid">'+
+  let h='<div class="search-section" style="margin-bottom:16px"><div class="search-box" style="width:100%"><span>🔍</span><input type="text" id="coin-search-input" placeholder="Search any Binance pair (e.g., DOGE, PEPE, WIF...)" oninput="handleCoinSearch(this.value)" style="width:100%"></div></div>';
+  h+='<div id="search-results-container"></div>';
+  h+='<div class="add-coin-section"><h3>Default Coins ('+allAvailable.length+')</h3><div class="add-coin-grid">'+
     allAvailable.map(c=>{
       const added=userCoins.includes(c);
-      return '<button class="add-coin-btn'+(added?' added':'')+'" onclick="toggleCoin(\''+c+'\',this)">'+c.replace('/USDT','')+(added?' ✓':'')+'</button>';
+      return '<button class="add-coin-btn'+(added?' added':'')+'" onclick="toggleCoin(\''+c+'\')">'+c.replace('/USDT','')+(added?' ✓':'')+'</button>';
+    }).join('')+'</div></div>';
+  body.innerHTML=h;
+}
+
+function handleCoinSearch(query){
+  clearTimeout(searchTimeout);
+  const container=document.getElementById("search-results-container");
+  if(!query||query.length<1){container.innerHTML='';return}
+  container.innerHTML='<div style="padding:10px;color:var(--text-secondary);font-size:12px">Searching...</div>';
+  searchTimeout=setTimeout(async()=>{
+    try{
+      const r=await(await fetch("/api/coins/search?q="+encodeURIComponent(query))).json();
+      searchResults=r.results||[];
+      renderSearchResults();
+    }catch(e){container.innerHTML='<div style="padding:10px;color:var(--red);font-size:12px">Search error</div>'}
+  },300);
+}
+
+function renderSearchResults(){
+  const container=document.getElementById("search-results-container");
+  if(!searchResults.length){container.innerHTML='<div class="add-coin-section"><h3>No results found</h3></div>';return}
+  container.innerHTML='<div class="add-coin-section"><h3>Search Results ('+searchResults.length+')</h3><div class="add-coin-grid">'+
+    searchResults.map(c=>{
+      const added=userCoins.includes(c.symbol);
+      return '<button class="add-coin-btn'+(added?' added':'')+'" onclick="toggleCoin(\''+c.symbol+'\')">'+c.base+(added?' ✓':'')+'</button>';
     }).join('')+'</div></div>';
 }
 
-async function toggleCoin(sym,btn){
+async function toggleCoin(sym){
   const added=userCoins.includes(sym);
   if(added){
     await fetch("/api/coins/remove",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({symbol:sym})});
     userCoins=userCoins.filter(c=>c!==sym);
   }else{
-    await fetch("/api/coins/add",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({symbol:sym})});
+    const r=await fetch("/api/coins/add",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({symbol:sym})});
+    const data=await r.json();
+    if(data.error){alert(data.error);return}
     userCoins.push(sym);
   }
+  // Preserve search input value and refresh UI
+  const searchInput=document.getElementById("coin-search-input");
+  const searchValue=searchInput?searchInput.value:'';
   renderAddCoin();
+  if(searchValue){
+    document.getElementById("coin-search-input").value=searchValue;
+    renderSearchResults();
+  }
   fetchData();
 }
 

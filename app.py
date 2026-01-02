@@ -440,7 +440,9 @@ class AnalyzerApp:
             body = await request.json()
             sym = body.get('symbol', '').upper()
             sym = sym if '/' in sym else sym + '/USDT'
-            if sym not in ALL_COINS: return JSONResponse({'error': 'Invalid coin'}, status_code=400)
+            # Validate against Binance futures markets
+            if sym not in self.analyzer.exchange.markets:
+                return JSONResponse({'error': 'Invalid coin - not available on Binance Futures'}, status_code=400)
             return JSONResponse({'success': self.tracker.add_user_coin(user['id'], sym), 'symbol': sym})
 
         @self.app.post("/api/coins/remove")
@@ -453,6 +455,28 @@ class AnalyzerApp:
 
         @self.app.get("/api/coins/available")
         async def available(): return JSONResponse({'coins': ALL_COINS})
+
+        @self.app.get("/api/coins/search")
+        async def search_coins(request: Request, q: str = Query("", min_length=1)):
+            if not self._get_user(request): return JSONResponse({'error': 'Not authenticated'}, status_code=401)
+            q = q.upper()
+            user = self._get_user(request)
+            user_coins = self.tracker.get_user_coins(user['id']) if user else []
+            # Search in Binance futures markets for USDT pairs
+            results = []
+            for symbol, market in self.analyzer.exchange.markets.items():
+                if '/USDT' in symbol and q in symbol:
+                    base = symbol.replace('/USDT', '')
+                    results.append({
+                        'symbol': symbol,
+                        'base': base,
+                        'inWatchlist': symbol in user_coins,
+                        'inDefault': symbol in ALL_COINS
+                    })
+                    if len(results) >= 50: break  # Limit results
+            # Sort: exact matches first, then alphabetically
+            results.sort(key=lambda x: (0 if x['base'] == q else 1, x['base']))
+            return JSONResponse({'results': results[:30]})
 
         @self.app.get("/")
         async def dashboard(request: Request):
