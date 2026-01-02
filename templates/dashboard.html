@@ -6,8 +6,17 @@
   <title>Crypto Market Analyzer</title>
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
-    :root{--bg-primary:#0a0a0f;--bg-secondary:#12121a;--bg-tertiary:#1a1a2e;--bg-card:#16162a;--border:#2d2d4a;--text-primary:#e8e8ff;--text-secondary:#8888aa;--green:#00d68f;--red:#ff4d6a;--yellow:#ffb800;--blue:#00b4ff;--purple:#8b5cf6}
+    :root{--bg-primary:#0a0a0f;--bg-secondary:#12121a;--bg-tertiary:#1a1a2e;--bg-card:#16162a;--border:#2d2d4a;--text-primary:#e8e8ff;--text-secondary:#8888aa;--green:#00d68f;--red:#ff4d6a;--yellow:#ffb800;--blue:#00b4ff;--purple:#8b5cf6;--orange:#ff9500}
     body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg-primary);color:var(--text-primary);min-height:100vh}
+
+    /* Shimmer Animation */
+    @keyframes shimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}
+    .shimmer{background:linear-gradient(90deg,var(--bg-tertiary) 25%,var(--bg-card) 50%,var(--bg-tertiary) 75%);background-size:200% 100%;animation:shimmer 1.5s infinite}
+    .shimmer-text{height:14px;border-radius:4px;margin:4px 0}
+    .shimmer-title{height:24px;width:60%;border-radius:6px}
+    .shimmer-block{border-radius:8px}
+    .shimmer-circle{border-radius:50%}
+
     .header{background:var(--bg-secondary);border-bottom:1px solid var(--border);padding:12px 20px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:100}
     .logo{display:flex;align-items:center;gap:10px}
     .logo-icon{width:34px;height:34px;background:linear-gradient(135deg,#8b5cf6,#00b4ff);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:bold;color:white}
@@ -16,9 +25,10 @@
     .header-stat{display:flex;align-items:center;gap:6px;padding:6px 12px;background:var(--bg-tertiary);border-radius:6px;font-size:12px}
     .status-dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
     @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
-    .btn{background:linear-gradient(135deg,#8b5cf6,#00b4ff);color:white;border:none;padding:8px 16px;border-radius:6px;font-weight:600;font-size:12px;cursor:pointer}
-    .btn:hover{opacity:0.9}
+    .btn{background:linear-gradient(135deg,#8b5cf6,#00b4ff);color:white;border:none;padding:8px 16px;border-radius:6px;font-weight:600;font-size:12px;cursor:pointer;transition:all 0.2s}
+    .btn:hover{opacity:0.9;transform:translateY(-1px)}
     .btn-secondary{background:var(--bg-tertiary);border:1px solid var(--border)}
+    .btn-icon{width:36px;height:36px;padding:0;display:flex;align-items:center;justify-content:center;font-size:18px}
     .user-menu{display:flex;align-items:center;gap:10px;padding:6px 12px;background:var(--bg-tertiary);border-radius:6px;cursor:pointer}
     .user-avatar{width:28px;height:28px;border-radius:50%;background:var(--purple)}
     .user-name{font-size:12px;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -41,7 +51,10 @@
     .legend-item{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-secondary);padding:5px 8px;background:var(--bg-tertiary);border-radius:4px}
     .grade-dot{width:8px;height:8px;border-radius:50%}
     .grade-a{background:var(--green)}.grade-b{background:var(--blue)}.grade-c{background:var(--yellow)}.grade-d{background:var(--red)}
-    .content{padding:14px;overflow-y:auto;background:linear-gradient(180deg,#1a1a2e 0%,#0a0a0f 100%)}
+    .content{padding:14px;overflow-y:auto;background:linear-gradient(180deg,#1a1a2e 0%,#0a0a0f 100%);min-height:calc(100vh - 58px)}
+
+    /* List View */
+    #list-view{transition:opacity 0.2s}
     .btc-section{background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:14px;border-top:2px solid #f7931a}
     .btc-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
     .btc-title{display:flex;align-items:center;gap:12px}
@@ -61,7 +74,7 @@
     .search-box{display:flex;align-items:center;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:6px;padding:0 12px}
     .search-box input{background:transparent;border:none;color:var(--text-primary);padding:10px;font-size:13px;width:180px;outline:none}
     .filter-tabs{display:flex;gap:6px;flex-wrap:wrap}
-    .filter-tab{padding:8px 14px;border-radius:6px;font-size:12px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-secondary);cursor:pointer}
+    .filter-tab{padding:8px 14px;border-radius:6px;font-size:12px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-secondary);cursor:pointer;transition:all 0.2s}
     .filter-tab.active{background:linear-gradient(135deg,#8b5cf6,#00b4ff);color:white;border-color:transparent}
     .coins-table{width:100%;border-collapse:collapse;background:var(--bg-card);border-radius:8px;overflow:hidden;border:1px solid var(--border)}
     .coins-table thead{background:var(--bg-tertiary)}
@@ -91,9 +104,84 @@
     .signal-tag.fund{border-color:var(--red);background:rgba(255,77,106,0.2)}
     .remove-btn{background:var(--red);color:white;border:none;padding:4px 8px;border-radius:4px;font-size:10px;cursor:pointer;opacity:0;transition:opacity 0.2s}
     tr:hover .remove-btn{opacity:1}
+
+    /* Detail View */
+    #detail-view{display:none}
+    #detail-view.active{display:block}
+    #list-view.hidden{display:none}
+
+    .detail-header{display:flex;align-items:center;gap:16px;margin-bottom:20px}
+    .back-btn{width:40px;height:40px;border-radius:10px;background:var(--bg-card);border:1px solid var(--border);color:var(--text-primary);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:20px;transition:all 0.2s}
+    .back-btn:hover{background:var(--bg-tertiary);border-color:var(--purple)}
+    .detail-title{display:flex;align-items:center;gap:14px;flex:1}
+    .detail-icon{width:48px;height:48px;border-radius:50%;background:linear-gradient(135deg,#4a3f8a,#2d2d6a);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:16px}
+    .detail-name h2{font-size:22px;margin-bottom:2px}
+    .detail-name span{font-size:12px;color:var(--text-secondary)}
+    .detail-price{text-align:right}
+    .detail-price-value{font-size:28px;font-weight:700}
+    .detail-price-change{font-size:14px}
+
+    .detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
+    .detail-card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px}
+    .detail-card-title{font-size:11px;text-transform:uppercase;color:var(--text-secondary);letter-spacing:0.5px;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+    .detail-card-title::before{content:'';width:3px;height:12px;background:var(--purple);border-radius:2px}
+
+    /* Pie Chart */
+    .chart-container{display:flex;align-items:center;gap:24px}
+    .pie-chart{width:120px;height:120px;border-radius:50%;position:relative;flex-shrink:0}
+    .pie-center{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:70px;height:70px;background:var(--bg-card);border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center}
+    .pie-center-value{font-size:16px;font-weight:700}
+    .pie-center-label{font-size:9px;color:var(--text-secondary);text-transform:uppercase}
+    .chart-legend{flex:1}
+    .legend-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)}
+    .legend-row:last-child{border-bottom:none}
+    .legend-color{width:12px;height:12px;border-radius:3px;flex-shrink:0}
+    .legend-label{font-size:12px;color:var(--text-secondary);flex:1}
+    .legend-value{font-size:13px;font-weight:600}
+    .legend-pct{font-size:11px;color:var(--text-secondary);width:40px;text-align:right}
+
+    /* Score Breakdown */
+    .score-breakdown{display:grid;gap:12px}
+    .score-row{display:flex;align-items:center;gap:12px}
+    .score-label{width:70px;font-size:11px;color:var(--text-secondary);text-transform:uppercase}
+    .score-bar-container{flex:1;height:8px;background:var(--bg-tertiary);border-radius:4px;overflow:hidden}
+    .score-bar{height:100%;border-radius:4px;transition:width 0.5s ease}
+    .score-value{width:40px;font-size:12px;font-weight:600;text-align:right}
+
+    /* Indicator Cards */
+    .indicator-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
+    .indicator-card{background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:16px;text-align:center}
+    .indicator-label{font-size:10px;color:var(--text-secondary);text-transform:uppercase;margin-bottom:8px}
+    .indicator-value{font-size:18px;font-weight:700}
+    .indicator-sub{font-size:11px;color:var(--text-secondary);margin-top:4px}
+
+    /* Signals Section */
+    .signals-section{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:20px}
+    .signals-grid{display:flex;flex-wrap:wrap;gap:8px}
+    .signal-chip{padding:8px 14px;border-radius:6px;font-size:12px;font-weight:500}
+
+    /* History Section */
+    .history-section{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+    .history-header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+    .history-header h3{font-size:14px}
+    .history-table{width:100%;border-collapse:collapse}
+    .history-table th{text-align:left;padding:12px 20px;font-size:10px;text-transform:uppercase;color:var(--text-secondary);background:var(--bg-tertiary);font-weight:600}
+    .history-table td{padding:14px 20px;font-size:13px;border-top:1px solid var(--border)}
+    .history-table tr:hover{background:rgba(139,92,246,0.05)}
+    .history-grade{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:4px;font-weight:700;font-size:11px}
+    .today-badge{display:inline-block;padding:2px 6px;background:var(--purple);color:white;border-radius:4px;font-size:9px;margin-left:6px}
+    .load-more-container{padding:16px;text-align:center;border-top:1px solid var(--border)}
+    .no-history{text-align:center;padding:40px;color:var(--text-secondary)}
+
+    /* Shimmer variants for detail view */
+    .detail-shimmer-header{display:flex;align-items:center;gap:16px;margin-bottom:20px}
+    .detail-shimmer-icon{width:48px;height:48px}
+    .detail-shimmer-info{flex:1}
+    .detail-shimmer-price{width:150px;height:40px}
+
     .modal{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(10,10,15,0.9);z-index:200;align-items:center;justify-content:center}
     .modal.active{display:flex}
-    .modal-content{background:var(--bg-secondary);border:1px solid var(--border);border-radius:12px;width:90%;max-width:700px;max-height:85vh;display:flex;flex-direction:column}
+    .modal-content{background:var(--bg-secondary);border:1px solid var(--border);border-radius:12px;width:90%;max-width:500px;max-height:85vh;display:flex;flex-direction:column}
     .modal-header{padding:16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
     .modal-header h2{font-size:18px}
     .modal-close{width:30px;height:30px;border-radius:6px;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-secondary);cursor:pointer;font-size:18px}
@@ -101,25 +189,16 @@
     .add-coin-section{margin-bottom:20px;padding:14px;background:var(--bg-tertiary);border-radius:8px}
     .add-coin-section h3{font-size:12px;margin-bottom:10px;color:var(--text-secondary)}
     .add-coin-grid{display:flex;flex-wrap:wrap;gap:6px;max-height:200px;overflow-y:auto}
-    .add-coin-btn{padding:6px 12px;border-radius:4px;font-size:11px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-primary);cursor:pointer}
+    .add-coin-btn{padding:6px 12px;border-radius:4px;font-size:11px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-primary);cursor:pointer;transition:all 0.2s}
     .add-coin-btn:hover{border-color:var(--purple);background:rgba(139,92,246,0.2)}
     .add-coin-btn.added{border-color:var(--green);background:rgba(0,214,143,0.2)}
-    .current-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:20px}
-    .current-stat{background:var(--bg-tertiary);padding:12px;border-radius:8px;text-align:center}
-    .current-stat-label{font-size:10px;color:var(--text-secondary);text-transform:uppercase;margin-bottom:4px}
-    .current-stat-value{font-size:16px;font-weight:600}
-    .history-table{width:100%;border-collapse:collapse}
-    .history-table th{text-align:left;padding:10px 12px;font-size:10px;text-transform:uppercase;color:var(--text-secondary);background:var(--bg-tertiary);border-bottom:1px solid var(--border)}
-    .history-table td{padding:12px;font-size:13px;border-bottom:1px solid var(--border)}
-    .history-grade{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:4px;font-weight:700;font-size:11px}
-    .today-badge{display:inline-block;padding:2px 6px;background:var(--purple);color:white;border-radius:4px;font-size:9px;margin-left:6px}
-    .load-more-container{text-align:center;padding:16px}
-    .no-history{text-align:center;padding:40px;color:var(--text-secondary)}
+
     .loading,.empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:50px;color:var(--text-secondary)}
     .spinner{width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--purple);border-radius:50%;animation:spin 1s linear infinite;margin-bottom:14px}
     @keyframes spin{to{transform:rotate(360deg)}}
-    @media(max-width:1000px){.btc-grid{grid-template-columns:repeat(3,1fr)}}
-    @media(max-width:800px){.main{grid-template-columns:1fr}.sidebar{display:none}.current-stats{grid-template-columns:repeat(2,1fr)}}
+
+    @media(max-width:1000px){.btc-grid{grid-template-columns:repeat(3,1fr)}.detail-grid{grid-template-columns:1fr}.indicator-grid{grid-template-columns:repeat(2,1fr)}}
+    @media(max-width:800px){.main{grid-template-columns:1fr}.sidebar{display:none}.indicator-grid{grid-template-columns:repeat(2,1fr)}}
   </style>
 </head>
 <body>
@@ -162,48 +241,50 @@
       </div>
     </aside>
     <section class="content">
-      <div class="btc-section">
-        <div class="btc-header">
-          <div class="btc-title"><div class="btc-icon">B</div><div class="btc-name"><h2>Bitcoin</h2><span>BTC/USDT - Market Leader</span></div></div>
-          <div><div class="btc-price" id="btc-price">$--,---</div><div class="btc-change" id="btc-change">--%</div></div>
+      <!-- List View -->
+      <div id="list-view">
+        <div class="btc-section">
+          <div class="btc-header">
+            <div class="btc-title"><div class="btc-icon">B</div><div class="btc-name"><h2>Bitcoin</h2><span>BTC/USDT - Market Leader</span></div></div>
+            <div><div class="btc-price" id="btc-price">$--,---</div><div class="btc-change" id="btc-change">--%</div></div>
+          </div>
+          <div class="btc-grid">
+            <div class="btc-stat"><div class="btc-stat-label">Sentiment</div><div class="btc-stat-value"><span class="sentiment-badge sentiment-neutral" id="btc-sentiment">--</span></div></div>
+            <div class="btc-stat"><div class="btc-stat-label">Trend</div><div class="btc-stat-value" id="btc-trend">--</div></div>
+            <div class="btc-stat"><div class="btc-stat-label">Spot Vol</div><div class="btc-stat-value" id="btc-spot-vol">--</div></div>
+            <div class="btc-stat"><div class="btc-stat-label">Futures Vol</div><div class="btc-stat-value" id="btc-volume">--</div></div>
+            <div class="btc-stat"><div class="btc-stat-label">OBV</div><div class="btc-stat-value" id="btc-obv">--</div></div>
+            <div class="btc-stat"><div class="btc-stat-label">Funding</div><div class="btc-stat-value" id="btc-funding">--</div></div>
+          </div>
         </div>
-        <div class="btc-grid">
-          <div class="btc-stat"><div class="btc-stat-label">Sentiment</div><div class="btc-stat-value"><span class="sentiment-badge sentiment-neutral" id="btc-sentiment">--</span></div></div>
-          <div class="btc-stat"><div class="btc-stat-label">Trend</div><div class="btc-stat-value" id="btc-trend">--</div></div>
-          <div class="btc-stat"><div class="btc-stat-label">Spot Vol</div><div class="btc-stat-value" id="btc-spot-vol">--</div></div>
-          <div class="btc-stat"><div class="btc-stat-label">Futures Vol</div><div class="btc-stat-value" id="btc-volume">--</div></div>
-          <div class="btc-stat"><div class="btc-stat-label">OBV</div><div class="btc-stat-value" id="btc-obv">--</div></div>
-          <div class="btc-stat"><div class="btc-stat-label">Funding</div><div class="btc-stat-value" id="btc-funding">--</div></div>
+        <div class="table-controls">
+          <div class="search-box"><span>🔍</span><input type="text" id="search-input" placeholder="Search..." oninput="applyFilters()"></div>
+          <div class="filter-tabs">
+            <button class="filter-tab active" onclick="setFilter('all',this)">All</button>
+            <button class="filter-tab" onclick="setFilter('high',this)">High Score</button>
+            <button class="filter-tab" onclick="setFilter('bullish',this)">Bullish OBV</button>
+            <button class="filter-tab" onclick="setFilter('volume',this)">High Volume</button>
+            <button class="filter-tab" onclick="setFilter('divergence',this)">Divergence</button>
+          </div>
         </div>
+        <div id="table-container"><div class="loading"><div class="spinner"></div>Loading...</div></div>
       </div>
-      <div class="table-controls">
-        <div class="search-box"><span>🔍</span><input type="text" id="search-input" placeholder="Search..." oninput="applyFilters()"></div>
-        <div class="filter-tabs">
-          <button class="filter-tab active" onclick="setFilter('all',this)">All</button>
-          <button class="filter-tab" onclick="setFilter('high',this)">High Score</button>
-          <button class="filter-tab" onclick="setFilter('bullish',this)">Bullish OBV</button>
-          <button class="filter-tab" onclick="setFilter('volume',this)">High Volume</button>
-          <button class="filter-tab" onclick="setFilter('divergence',this)">Divergence</button>
-        </div>
-      </div>
-      <div id="table-container"><div class="loading"><div class="spinner"></div>Loading...</div></div>
+
+      <!-- Detail View -->
+      <div id="detail-view"></div>
     </section>
   </main>
-  <div class="modal" id="detail-modal">
-    <div class="modal-content">
-      <div class="modal-header"><h2 id="modal-title">Details</h2><button class="modal-close" onclick="closeModal()">×</button></div>
-      <div class="modal-body" id="modal-body"></div>
-    </div>
-  </div>
+
   <div class="modal" id="add-coin-modal">
-    <div class="modal-content" style="max-width:500px">
+    <div class="modal-content">
       <div class="modal-header"><h2>Manage Watchlist</h2><button class="modal-close" onclick="closeAddCoinModal()">×</button></div>
       <div class="modal-body" id="add-coin-body"><div class="loading"><div class="spinner"></div>Loading...</div></div>
     </div>
   </div>
+
 <script>
 let allCoins=[],userCoins=[],allAvailable=[],btcData=null,currentFilter="all",ws;
-let modalState={symbol:null,cursor:null,loading:false,history:[]};
+let detailState={symbol:null,coin:null,cursor:null,loading:false,history:[],historyLoaded:false};
 
 document.addEventListener("DOMContentLoaded",()=>{loadUser();initWS();fetchData();setInterval(fetchData,30000)});
 
@@ -222,7 +303,7 @@ function initWS(){
   const p=location.protocol==="https:"?"wss:":"ws:";
   ws=new WebSocket(p+"//"+location.host+"/ws");
   ws.onopen=()=>document.getElementById("status-text").textContent="Live";
-  ws.onmessage=e=>{if(JSON.parse(e.data).type==="scan_complete")fetchData()};
+  ws.onmessage=e=>{if(JSON.parse(e.data).type==="scan_complete"){fetchData();if(detailState.symbol)refreshDetailData()}};
   ws.onclose=()=>{document.getElementById("status-text").textContent="Reconnecting...";setTimeout(initWS,3000)};
 }
 
@@ -241,7 +322,8 @@ async function fetchData(){
     document.getElementById("coins-count").textContent=allCoins.length;
     document.getElementById("high-score-count").textContent=allCoins.filter(c=>c.score.percentage>=70).length;
     document.getElementById("avg-score").textContent=allCoins.length?Math.round(allCoins.reduce((s,c)=>s+c.score.percentage,0)/allCoins.length)+"%":"--";
-    updateBTC();applyFilters();
+    updateBTC();
+    if(!detailState.symbol)applyFilters();
   }catch(e){console.error(e)}
 }
 
@@ -306,61 +388,245 @@ function scoreClass(g){return g.startsWith("A")?"score-a":g==="B"?"score-b":g===
 function sigClass(s){return s.includes("[OBV]")?"obv":s.includes("[VOL]")?"vol":s.includes("[RSI]")?"rsi":s.includes("[TREND]")?"trend":s.includes("[MACD]")?"macd":s.includes("[FUND]")?"fund":""}
 function fmtPrice(p){return p>=1000?p.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2}):p>=1?p.toFixed(4):p.toFixed(6)}
 function fmtVol(v){return !v?"0":v>=1e9?(v/1e9).toFixed(2)+"B":v>=1e6?(v/1e6).toFixed(2)+"M":v>=1e3?(v/1e3).toFixed(1)+"K":v.toFixed(0)}
-function fmtDate(d){return new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'})}
+function fmtDate(d){return new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}
+function getScoreColor(score){return score>=80?'var(--green)':score>=70?'var(--blue)':score>=60?'var(--yellow)':'var(--red)'}
 
-async function showDetail(sym){
-  const modal=document.getElementById("detail-modal");
-  document.getElementById("modal-title").textContent=sym.replace("/USDT","")+" - History";
-  document.getElementById("modal-body").innerHTML='<div class="loading"><div class="spinner"></div>Loading...</div>';
-  modal.classList.add("active");
-  modalState={symbol:sym,cursor:null,loading:false,history:[]};
+// Detail View Functions
+function showDetail(sym){
+  const coin=allCoins.find(c=>c.symbol===sym);
+  if(!coin)return;
+
+  detailState={symbol:sym,coin:coin,cursor:null,loading:false,history:[],historyLoaded:false};
+
+  document.getElementById("list-view").classList.add("hidden");
+  const dv=document.getElementById("detail-view");
+  dv.classList.add("active");
+
+  // Show shimmer loading first
+  dv.innerHTML=renderDetailShimmer();
+
+  // Then render actual content after brief delay for smooth transition
+  setTimeout(()=>renderDetailView(coin),100);
+
+  // Load history in background
+  loadDetailHistory(sym);
+}
+
+function renderDetailShimmer(){
+  return `
+    <div class="detail-header">
+      <button class="back-btn shimmer shimmer-block" style="width:40px;height:40px"></button>
+      <div class="detail-title">
+        <div class="shimmer shimmer-circle" style="width:48px;height:48px"></div>
+        <div style="flex:1"><div class="shimmer shimmer-text" style="width:120px;height:22px;margin-bottom:6px"></div><div class="shimmer shimmer-text" style="width:80px;height:14px"></div></div>
+      </div>
+      <div><div class="shimmer shimmer-block" style="width:150px;height:32px;margin-bottom:6px"></div><div class="shimmer shimmer-block" style="width:80px;height:16px;margin-left:auto"></div></div>
+    </div>
+    <div class="detail-grid">
+      <div class="detail-card"><div class="shimmer shimmer-text" style="width:100px;margin-bottom:20px"></div><div class="shimmer shimmer-block" style="width:100%;height:120px"></div></div>
+      <div class="detail-card"><div class="shimmer shimmer-text" style="width:100px;margin-bottom:20px"></div><div class="shimmer shimmer-block" style="width:100%;height:120px"></div></div>
+    </div>
+    <div class="indicator-grid">
+      ${[1,2,3,4].map(()=>'<div class="indicator-card"><div class="shimmer shimmer-text" style="width:60%;margin:0 auto 12px"></div><div class="shimmer shimmer-block" style="width:50%;height:24px;margin:0 auto"></div></div>').join('')}
+    </div>
+    <div class="signals-section"><div class="shimmer shimmer-text" style="width:80px;margin-bottom:16px"></div><div style="display:flex;gap:8px">${[1,2,3].map(()=>'<div class="shimmer shimmer-block" style="width:100px;height:32px"></div>').join('')}</div></div>
+    <div class="history-section"><div class="shimmer shimmer-block" style="width:100%;height:300px"></div></div>
+  `;
+}
+
+function renderDetailView(coin){
+  const i=coin.indicators["1h"];
+  const i4=coin.indicators["4h"]||{};
+  const spotVol=coin.spot_volume||0;
+  const futVol=coin.futures_volume||0;
+  const totalVol=spotVol+futVol;
+  const spotPct=totalVol>0?Math.round(spotVol/totalVol*100):50;
+  const futPct=100-spotPct;
+
+  const dv=document.getElementById("detail-view");
+  dv.innerHTML=`
+    <div class="detail-header">
+      <button class="back-btn" onclick="hideDetail()">←</button>
+      <div class="detail-title">
+        <div class="detail-icon">${coin.display_name.slice(0,2)}</div>
+        <div class="detail-name"><h2>${coin.display_name}</h2><span>${coin.symbol} · Rank #${allCoins.indexOf(coin)+1}</span></div>
+      </div>
+      <div class="detail-price">
+        <div class="detail-price-value">$${fmtPrice(coin.price)}</div>
+        <div class="detail-price-change ${coin.price_change_24h>=0?'positive':'negative'}">${coin.price_change_24h>0?'+':''}${coin.price_change_24h}% (24h)</div>
+      </div>
+    </div>
+
+    <div class="detail-grid">
+      <div class="detail-card">
+        <div class="detail-card-title">Volume Distribution</div>
+        <div class="chart-container">
+          <div class="pie-chart" style="background:conic-gradient(var(--blue) 0% ${spotPct}%, var(--orange) ${spotPct}% 100%)">
+            <div class="pie-center">
+              <div class="pie-center-value">$${fmtVol(totalVol)}</div>
+              <div class="pie-center-label">Total</div>
+            </div>
+          </div>
+          <div class="chart-legend">
+            <div class="legend-row">
+              <div class="legend-color" style="background:var(--blue)"></div>
+              <span class="legend-label">Spot Volume</span>
+              <span class="legend-value">$${fmtVol(spotVol)}</span>
+              <span class="legend-pct">${spotPct}%</span>
+            </div>
+            <div class="legend-row">
+              <div class="legend-color" style="background:var(--orange)"></div>
+              <span class="legend-label">Futures Volume</span>
+              <span class="legend-value">$${fmtVol(futVol)}</span>
+              <span class="legend-pct">${futPct}%</span>
+            </div>
+            <div class="legend-row">
+              <div class="legend-color" style="background:var(--text-secondary)"></div>
+              <span class="legend-label">Spot Change</span>
+              <span class="legend-value ${coin.spot_volume_change>=0?'positive':'negative'}">${coin.spot_volume_change>0?'+':''}${coin.spot_volume_change}%</span>
+              <span class="legend-pct"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="detail-card">
+        <div class="detail-card-title">Score Breakdown (${coin.score.grade} - ${coin.score.percentage}%)</div>
+        <div class="score-breakdown">
+          ${Object.entries(coin.score.component_scores).map(([k,v])=>`
+            <div class="score-row">
+              <span class="score-label">${k}</span>
+              <div class="score-bar-container">
+                <div class="score-bar" style="width:${v}%;background:${getScoreColor(v)}"></div>
+              </div>
+              <span class="score-value" style="color:${getScoreColor(v)}">${v}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    </div>
+
+    <div class="indicator-grid">
+      <div class="indicator-card">
+        <div class="indicator-label">RSI (14)</div>
+        <div class="indicator-value ${i.rsi<30?'positive':i.rsi>70?'negative':''}">${i.rsi?.toFixed(1)||'--'}</div>
+        <div class="indicator-sub">${i.rsi<30?'Oversold':i.rsi>70?'Overbought':'Neutral'}</div>
+      </div>
+      <div class="indicator-card">
+        <div class="indicator-label">OBV Trend</div>
+        <div class="indicator-value ${i.obv_trend==='bullish'?'positive':i.obv_trend==='bearish'?'negative':''}">${(i.obv_trend||'--').toUpperCase()}</div>
+        <div class="indicator-sub">${i.obv_strength||'--'} · ${i.obv_change>0?'+':''}${i.obv_change?.toFixed(1)||0}%</div>
+      </div>
+      <div class="indicator-card">
+        <div class="indicator-label">Funding Rate</div>
+        <div class="indicator-value ${coin.funding_rate>0.01?'negative':coin.funding_rate<-0.01?'positive':''}">${coin.funding_rate.toFixed(4)}%</div>
+        <div class="indicator-sub">${coin.funding_rate>0.01?'Longs Paying':coin.funding_rate<-0.01?'Shorts Paying':'Neutral'}</div>
+      </div>
+      <div class="indicator-card">
+        <div class="indicator-label">Trend (1h/4h)</div>
+        <div class="indicator-value ${i.trend==='uptrend'?'positive':i.trend==='downtrend'?'negative':''}">${(i.trend||'--').toUpperCase()}</div>
+        <div class="indicator-sub">4h: ${(i4.trend||'--').toUpperCase()}</div>
+      </div>
+    </div>
+
+    <div class="signals-section">
+      <div class="detail-card-title">Active Signals</div>
+      <div class="signals-grid">
+        ${coin.signals.map(s=>`<span class="signal-chip signal-tag ${sigClass(s)}">${s}</span>`).join('')}
+        ${coin.signals.length===0||coin.signals[0]==='No signals'?'<span style="color:var(--text-secondary)">No active signals</span>':''}
+      </div>
+    </div>
+
+    <div class="history-section">
+      <div class="history-header">
+        <h3>Historical Performance</h3>
+        <span style="color:var(--text-secondary);font-size:12px">Daily averages</span>
+      </div>
+      <div id="history-content">
+        <div style="padding:40px;text-align:center">
+          <div class="spinner" style="margin:0 auto 10px"></div>
+          <div style="color:var(--text-secondary);font-size:13px">Loading history...</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function loadDetailHistory(sym){
   try{
-    const coinData=allCoins.find(c=>c.symbol===sym);
     const hd=await(await fetch("/api/coin/"+encodeURIComponent(sym)+"/history?limit=30")).json();
-    modalState.cursor=hd.next_cursor;modalState.history=hd.history||[];
-    renderModal(coinData,hd.today,modalState.history,hd.has_more);
-  }catch(e){document.getElementById("modal-body").innerHTML='<div class="empty-state">Error</div>'}
+    detailState.cursor=hd.next_cursor;
+    detailState.history=hd.history||[];
+    detailState.historyLoaded=true;
+    renderHistoryTable(hd.today,detailState.history,hd.has_more);
+  }catch(e){
+    document.getElementById("history-content").innerHTML='<div class="no-history">Failed to load history</div>';
+  }
 }
 
-function renderModal(coin,today,hist,more){
-  const i=coin?coin.indicators["1h"]:{};
-  let h='';
+function renderHistoryTable(today,hist,more){
+  const el=document.getElementById("history-content");
+  if(!el)return;
+
+  if(!today&&hist.length===0){
+    el.innerHTML='<div class="no-history">No historical data yet. Data will appear after the first full day of tracking.</div>';
+    return;
+  }
+
+  let h='<table class="history-table"><thead><tr><th>Date</th><th>Avg Score</th><th>Price Change</th><th>Scans</th></tr></thead><tbody>';
+
+  if(today){
+    const oc=today.price_change_pct>=0?'positive':'negative';
+    h+=`<tr><td>${fmtDate(today.date)}<span class="today-badge">TODAY</span></td><td><span class="history-grade ${scoreClass(today.avg_grade)}">${today.avg_grade}</span> <span style="color:var(--text-secondary)">(${today.avg_score}%)</span></td><td class="${oc}">${today.price_change_pct>=0?'+':''}${today.price_change_pct}%</td><td>${today.scan_count}</td></tr>`;
+  }
+
+  hist.forEach(d=>{
+    const oc=d.price_change_pct>=0?'positive':'negative';
+    h+=`<tr><td>${fmtDate(d.date)}</td><td><span class="history-grade ${scoreClass(d.avg_grade)}">${d.avg_grade}</span> <span style="color:var(--text-secondary)">(${d.avg_score}%)</span></td><td class="${oc}">${d.price_change_pct>=0?'+':''}${d.price_change_pct}%</td><td>${d.scan_count}</td></tr>`;
+  });
+
+  h+='</tbody></table>';
+  if(more)h+='<div class="load-more-container"><button class="btn btn-secondary" onclick="loadMoreHistory()">Load More</button></div>';
+
+  el.innerHTML=h;
+}
+
+async function loadMoreHistory(){
+  if(detailState.loading||!detailState.cursor)return;
+  detailState.loading=true;
+
+  try{
+    const d=await(await fetch("/api/coin/"+encodeURIComponent(detailState.symbol)+"/history?limit=30&before="+detailState.cursor)).json();
+    detailState.cursor=d.next_cursor;
+    detailState.history=[...detailState.history,...(d.history||[])];
+
+    const td=await(await fetch("/api/coin/"+encodeURIComponent(detailState.symbol)+"/history?limit=1")).json();
+    renderHistoryTable(td.today,detailState.history,d.has_more);
+  }catch(e){console.error(e)}
+
+  detailState.loading=false;
+}
+
+function refreshDetailData(){
+  if(!detailState.symbol)return;
+  const coin=allCoins.find(c=>c.symbol===detailState.symbol);
   if(coin){
-    h+='<div class="current-stats"><div class="current-stat"><div class="current-stat-label">Price</div><div class="current-stat-value">$'+fmtPrice(coin.price)+'</div></div>'+
-      '<div class="current-stat"><div class="current-stat-label">24h</div><div class="current-stat-value '+(coin.price_change_24h>=0?'positive':'negative')+'">'+(coin.price_change_24h>0?'+':'')+coin.price_change_24h+'%</div></div>'+
-      '<div class="current-stat"><div class="current-stat-label">Score</div><div class="current-stat-value">'+coin.score.grade+' ('+coin.score.percentage+'%)</div></div>'+
-      '<div class="current-stat"><div class="current-stat-label">OBV</div><div class="current-stat-value '+(i.obv_trend==='bullish'?'positive':i.obv_trend==='bearish'?'negative':'')+'">'+((i.obv_trend||'N/A').toUpperCase())+'</div></div></div>';
-  }
-  if(!today&&hist.length===0){h+='<div class="no-history">No history yet</div>'}
-  else{
-    h+='<table class="history-table"><thead><tr><th>Date</th><th>Avg Score</th><th>Outcome</th><th>Scans</th></tr></thead><tbody>';
-    if(today){
-      const oc=today.price_change_pct>=0?'positive':'negative';
-      h+='<tr><td>'+fmtDate(today.date)+'<span class="today-badge">TODAY</span></td><td><span class="history-grade '+scoreClass(today.avg_grade)+'">'+today.avg_grade+'</span> ('+today.avg_score+'%)</td><td class="'+oc+'">'+(today.price_change_pct>=0?'+':'')+today.price_change_pct+'%</td><td>'+today.scan_count+'</td></tr>';
+    detailState.coin=coin;
+    renderDetailView(coin);
+    if(detailState.historyLoaded){
+      loadDetailHistory(detailState.symbol);
     }
-    hist.forEach(d=>{
-      const oc=d.price_change_pct>=0?'positive':'negative';
-      h+='<tr><td>'+fmtDate(d.date)+'</td><td><span class="history-grade '+scoreClass(d.avg_grade)+'">'+d.avg_grade+'</span> ('+d.avg_score+'%)</td><td class="'+oc+'">'+(d.price_change_pct>=0?'+':'')+d.price_change_pct+'%</td><td>'+d.scan_count+'</td></tr>';
-    });
-    h+='</tbody></table>';
-    if(more)h+='<div class="load-more-container"><button class="btn btn-secondary" onclick="loadMore()">Load More</button></div>';
   }
-  document.getElementById("modal-body").innerHTML=h;
 }
 
-async function loadMore(){
-  if(modalState.loading||!modalState.cursor)return;
-  modalState.loading=true;
-  const d=await(await fetch("/api/coin/"+encodeURIComponent(modalState.symbol)+"/history?limit=30&before="+modalState.cursor)).json();
-  modalState.cursor=d.next_cursor;modalState.history=[...modalState.history,...(d.history||[])];
-  const coin=allCoins.find(c=>c.symbol===modalState.symbol);
-  const td=await(await fetch("/api/coin/"+encodeURIComponent(modalState.symbol)+"/history?limit=1")).json();
-  renderModal(coin,td.today,modalState.history,d.has_more);
-  modalState.loading=false;
+function hideDetail(){
+  detailState={symbol:null,coin:null,cursor:null,loading:false,history:[],historyLoaded:false};
+  document.getElementById("detail-view").classList.remove("active");
+  document.getElementById("detail-view").innerHTML='';
+  document.getElementById("list-view").classList.remove("hidden");
 }
 
-function closeModal(){document.getElementById("detail-modal").classList.remove("active")}
-
+// Add Coin Modal
 let searchResults=[],searchTimeout=null;
 
 async function openAddCoinModal(){
@@ -377,7 +643,7 @@ async function openAddCoinModal(){
 
 function renderAddCoin(){
   const body=document.getElementById("add-coin-body");
-  let h='<div class="search-section" style="margin-bottom:16px"><div class="search-box" style="width:100%"><span>🔍</span><input type="text" id="coin-search-input" placeholder="Search any Binance pair (e.g., DOGE, PEPE, WIF...)" oninput="handleCoinSearch(this.value)" style="width:100%"></div></div>';
+  let h='<div class="search-section" style="margin-bottom:16px"><div class="search-box" style="width:100%"><span>🔍</span><input type="text" id="coin-search-input" placeholder="Search any Binance pair..." oninput="handleCoinSearch(this.value)" style="width:100%"></div></div>';
   h+='<div id="search-results-container"></div>';
   h+='<div class="add-coin-section"><h3>Default Coins ('+allAvailable.length+')</h3><div class="add-coin-grid">'+
     allAvailable.map(c=>{
@@ -422,7 +688,6 @@ async function toggleCoin(sym){
     if(data.error){alert(data.error);return}
     userCoins.push(sym);
   }
-  // Preserve search input value and refresh UI
   const searchInput=document.getElementById("coin-search-input");
   const searchValue=searchInput?searchInput.value:'';
   renderAddCoin();
@@ -443,8 +708,13 @@ function closeAddCoinModal(){document.getElementById("add-coin-modal").classList
 
 function toggleDropdown(){document.getElementById("user-dropdown").classList.toggle("show")}
 document.addEventListener("click",e=>{if(!e.target.closest(".dropdown"))document.getElementById("user-dropdown").classList.remove("show")});
-document.addEventListener("keydown",e=>{if(e.key==="Escape"){closeModal();closeAddCoinModal()}});
-document.querySelectorAll(".modal").forEach(m=>m.addEventListener("click",e=>{if(e.target.classList.contains("modal")){closeModal();closeAddCoinModal()}}));
+document.addEventListener("keydown",e=>{
+  if(e.key==="Escape"){
+    if(detailState.symbol)hideDetail();
+    closeAddCoinModal();
+  }
+});
+document.querySelectorAll(".modal").forEach(m=>m.addEventListener("click",e=>{if(e.target.classList.contains("modal"))closeAddCoinModal()}));
 </script>
 </body>
 </html>

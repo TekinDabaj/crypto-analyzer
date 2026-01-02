@@ -135,6 +135,11 @@ class HistoricalTracker:
         with self.get_connection() as conn:
             return conn.execute("DELETE FROM user_coins WHERE user_id = ? AND symbol = ?", (user_id, symbol)).rowcount > 0
 
+    def get_all_watched_coins(self) -> List[str]:
+        """Get all unique coins from all users' watchlists"""
+        with self.get_connection() as conn:
+            return [r['symbol'] for r in conn.execute("SELECT DISTINCT symbol FROM user_coins").fetchall()]
+
     def log_batch(self, coins: List[Dict]):
         if not coins: return
         snapshot_date = coins[0]['timestamp'][:10]
@@ -537,6 +542,10 @@ class AnalyzerApp:
     async def _run_scan(self):
         logger.info("Starting scan...")
         try:
+            # Update coin list to include all user-watched coins
+            all_watched = self.tracker.get_all_watched_coins()
+            self.analyzer.coins = list(set(ALL_COINS + all_watched))
+            logger.info(f"Scanning {len(self.analyzer.coins)} coins ({len(all_watched)} from watchlists)")
             self.scan_results = await self.analyzer.scan_all()
             self.last_scan = datetime.now()
             self.scan_count += 1
