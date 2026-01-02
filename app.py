@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 Crypto Market Analyzer - Binance Version
-v2.2 - Production-grade historical tracking with daily aggregation
+v3.0 - Google OAuth + User Watchlists
 """
 
 import asyncio
 import json
 import logging
 import os
+import secrets
 import sqlite3
 import sys
 import time
@@ -16,46 +17,50 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set, Tuple
 
 import ccxt
+import httpx
 import numpy as np
 import pandas as pd
 import ta as ta_lib
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, Query
+from fastapi import FastAPI, WebSocket, Query, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from starlette.middleware.sessions import SessionMiddleware
 
 load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('analyzer.log'),
-        logging.StreamHandler(sys.stdout)
-    ]
+    handlers=[logging.FileHandler('analyzer.log'), logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.getenv('ANALYZER_DB_PATH', 'history.db')
+GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID', '')
+GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET', '')
+GOOGLE_REDIRECT_URI = os.getenv('GOOGLE_REDIRECT_URI', 'https://tekoworld.com/auth/callback')
+SESSION_SECRET = os.getenv('SESSION_SECRET', secrets.token_hex(32))
+
+ALL_COINS = [
+    'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT',
+    'ADA/USDT', 'AVAX/USDT', 'DOT/USDT', 'LINK/USDT', 'MATIC/USDT',
+    'ATOM/USDT', 'NEAR/USDT', 'APT/USDT', 'ARB/USDT', 'OP/USDT',
+    'SUI/USDT', 'INJ/USDT', 'FET/USDT', 'TIA/USDT', 'SEI/USDT',
+    'DOGE/USDT', 'PEPE/USDT', 'WIF/USDT', 'SHIB/USDT', 'LTC/USDT',
+    'BCH/USDT', 'ETC/USDT', 'FIL/USDT', 'IMX/USDT', 'RENDER/USDT',
+    'MAGIC/USDT', 'LIT/USDT', 'ZEN/USDT', 'ZEC/USDT', 'PUMP/USDT'
+]
 
 
 class HistoricalTracker:
-    """
-    Production-grade historical tracking with:
-    - Connection pooling via context manager
-    - Pre-computed daily summaries
-    - Efficient pagination
-    - Background aggregation
-    """
-    
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
         self._init_db()
     
     @contextmanager
     def get_connection(self):
-        """Thread-safe connection context manager."""
         conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
@@ -70,947 +75,498 @@ class HistoricalTracker:
             conn.close()
     
     def _init_db(self):
-        """Initialize database with optimized schema."""
         with self.get_connection() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS coin_snapshots (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT NOT NULL,
-                    date TEXT NOT NULL,
-                    symbol TEXT NOT NULL,
-                    price REAL NOT NULL,
-                    score INTEGER NOT NULL,
-                    grade TEXT NOT NULL,
-                    obv_trend TEXT,
-                    obv_divergence TEXT,
-                    funding_rate REAL,
-                    rsi REAL,
-                    volume_ratio REAL,
-                    signals TEXT
-                )
-            """)
-            
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS daily_summaries (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    date TEXT NOT NULL,
-                    symbol TEXT NOT NULL,
-                    scan_count INTEGER NOT NULL,
-                    avg_score REAL NOT NULL,
-                    avg_grade TEXT NOT NULL,
-                    open_price REAL NOT NULL,
-                    close_price REAL NOT NULL,
-                    high_price REAL NOT NULL,
-                    low_price REAL NOT NULL,
-                    price_change_pct REAL NOT NULL,
-                    dominant_obv_trend TEXT,
-                    bullish_divergence_count INTEGER DEFAULT 0,
-                    bearish_divergence_count INTEGER DEFAULT 0,
-                    created_at TEXT NOT NULL,
-                    UNIQUE(date, symbol)
-                )
-            """)
-            
+            conn.execute("""CREATE TABLE IF NOT EXISTS coin_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL, date TEXT NOT NULL,
+                symbol TEXT NOT NULL, price REAL NOT NULL, score INTEGER NOT NULL, grade TEXT NOT NULL,
+                obv_trend TEXT, obv_divergence TEXT, funding_rate REAL, rsi REAL, volume_ratio REAL, signals TEXT)""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS daily_summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, symbol TEXT NOT NULL,
+                scan_count INTEGER NOT NULL, avg_score REAL NOT NULL, avg_grade TEXT NOT NULL,
+                open_price REAL NOT NULL, close_price REAL NOT NULL, high_price REAL NOT NULL,
+                low_price REAL NOT NULL, price_change_pct REAL NOT NULL, dominant_obv_trend TEXT,
+                bullish_divergence_count INTEGER DEFAULT 0, bearish_divergence_count INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL, UNIQUE(date, symbol))""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, google_id TEXT UNIQUE NOT NULL,
+                email TEXT UNIQUE NOT NULL, name TEXT, picture TEXT, created_at TEXT NOT NULL, last_login TEXT)""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS user_coins (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, symbol TEXT NOT NULL,
+                added_at TEXT NOT NULL, UNIQUE(user_id, symbol), FOREIGN KEY (user_id) REFERENCES users(id))""")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_symbol_date ON coin_snapshots(symbol, date DESC)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_date ON coin_snapshots(date DESC)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp ON coin_snapshots(timestamp DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_summaries_symbol_date ON daily_summaries(symbol, date DESC)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_summaries_date ON daily_summaries(date DESC)")
-            
-        logger.info(f"Historical tracker initialized: {self.db_path}")
-    
-    def log_snapshot(self, coin_data: Dict):
-        """Log a single coin analysis snapshot."""
-        timestamp = coin_data['timestamp']
-        snapshot_date = timestamp[:10]
-        
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_user_coins_user ON user_coins(user_id)")
+        logger.info(f"DB initialized: {self.db_path}")
+
+    def get_or_create_user(self, google_id: str, email: str, name: str = None, picture: str = None) -> Dict:
         with self.get_connection() as conn:
-            conn.execute("""
-                INSERT INTO coin_snapshots 
-                (timestamp, date, symbol, price, score, grade, obv_trend, obv_divergence,
-                 funding_rate, rsi, volume_ratio, signals)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                timestamp,
-                snapshot_date,
-                coin_data['symbol'],
-                coin_data['price'],
-                coin_data['score']['total_score'],
-                coin_data['score']['grade'],
-                coin_data['indicators']['1h'].get('obv_trend'),
-                coin_data['indicators']['1h'].get('obv_divergence'),
-                coin_data['funding_rate'],
-                coin_data['indicators']['1h'].get('rsi'),
-                coin_data['indicators']['1h'].get('volume_ratio'),
-                json.dumps(coin_data['signals'])
-            ))
-    
+            user = conn.execute("SELECT * FROM users WHERE google_id = ?", (google_id,)).fetchone()
+            if user:
+                conn.execute("UPDATE users SET last_login = ?, name = ?, picture = ? WHERE id = ?",
+                    (datetime.utcnow().isoformat(), name, picture, user['id']))
+                return dict(user)
+            now = datetime.utcnow().isoformat()
+            cursor = conn.execute("INSERT INTO users (google_id, email, name, picture, created_at, last_login) VALUES (?, ?, ?, ?, ?, ?)",
+                (google_id, email, name, picture, now, now))
+            user_id = cursor.lastrowid
+            for symbol in ALL_COINS:
+                conn.execute("INSERT OR IGNORE INTO user_coins (user_id, symbol, added_at) VALUES (?, ?, ?)", (user_id, symbol, now))
+            return {'id': user_id, 'google_id': google_id, 'email': email, 'name': name, 'picture': picture, 'created_at': now}
+
+    def get_user_by_id(self, user_id: int) -> Optional[Dict]:
+        with self.get_connection() as conn:
+            user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            return dict(user) if user else None
+
+    def get_user_coins(self, user_id: int) -> List[str]:
+        with self.get_connection() as conn:
+            return [r['symbol'] for r in conn.execute("SELECT symbol FROM user_coins WHERE user_id = ? ORDER BY added_at", (user_id,)).fetchall()]
+
+    def add_user_coin(self, user_id: int, symbol: str) -> bool:
+        symbol = symbol.upper() if '/' in symbol else symbol.upper() + '/USDT'
+        with self.get_connection() as conn:
+            try:
+                conn.execute("INSERT OR IGNORE INTO user_coins (user_id, symbol, added_at) VALUES (?, ?, ?)", (user_id, symbol, datetime.utcnow().isoformat()))
+                return True
+            except: return False
+
+    def remove_user_coin(self, user_id: int, symbol: str) -> bool:
+        symbol = symbol.upper() if '/' in symbol else symbol.upper() + '/USDT'
+        with self.get_connection() as conn:
+            return conn.execute("DELETE FROM user_coins WHERE user_id = ? AND symbol = ?", (user_id, symbol)).rowcount > 0
+
     def log_batch(self, coins: List[Dict]):
-        """Log multiple coin snapshots efficiently."""
-        if not coins:
-            return
-            
-        timestamp = coins[0]['timestamp']
-        snapshot_date = timestamp[:10]
-        
+        if not coins: return
+        snapshot_date = coins[0]['timestamp'][:10]
         with self.get_connection() as conn:
-            conn.executemany("""
-                INSERT INTO coin_snapshots 
-                (timestamp, date, symbol, price, score, grade, obv_trend, obv_divergence,
-                 funding_rate, rsi, volume_ratio, signals)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, [
-                (
-                    coin['timestamp'],
-                    snapshot_date,
-                    coin['symbol'],
-                    coin['price'],
-                    coin['score']['total_score'],
-                    coin['score']['grade'],
-                    coin['indicators']['1h'].get('obv_trend'),
-                    coin['indicators']['1h'].get('obv_divergence'),
-                    coin['funding_rate'],
-                    coin['indicators']['1h'].get('rsi'),
-                    coin['indicators']['1h'].get('volume_ratio'),
-                    json.dumps(coin['signals'])
-                )
-                for coin in coins
-            ])
-    
+            conn.executemany("""INSERT INTO coin_snapshots (timestamp, date, symbol, price, score, grade, obv_trend, obv_divergence, funding_rate, rsi, volume_ratio, signals)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [(c['timestamp'], snapshot_date, c['symbol'], c['price'], c['score']['total_score'], c['score']['grade'],
+                  c['indicators']['1h'].get('obv_trend'), c['indicators']['1h'].get('obv_divergence'), c['funding_rate'],
+                  c['indicators']['1h'].get('rsi'), c['indicators']['1h'].get('volume_ratio'), json.dumps(c['signals'])) for c in coins])
+
     def aggregate_daily_summaries(self, target_date: Optional[str] = None):
-        """Aggregate snapshots into daily summaries for completed days."""
-        if target_date is None:
-            target_date = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')
-        
+        if target_date is None: target_date = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')
         with self.get_connection() as conn:
-            existing = conn.execute(
-                "SELECT COUNT(*) FROM daily_summaries WHERE date = ?",
-                (target_date,)
-            ).fetchone()[0]
-            
-            if existing > 0:
-                logger.debug(f"Daily summaries for {target_date} already exist")
-                return
-            
-            symbols = conn.execute(
-                "SELECT DISTINCT symbol FROM coin_snapshots WHERE date = ?",
-                (target_date,)
-            ).fetchall()
-            
-            for (symbol,) in symbols:
-                self._aggregate_coin_day(conn, symbol, target_date)
-            
-            logger.info(f"Aggregated {len(symbols)} coins for {target_date}")
-    
-    def _aggregate_coin_day(self, conn, symbol: str, target_date: str):
-        """Aggregate a single coin's data for a specific day."""
-        rows = conn.execute("""
-            SELECT price, score, grade, obv_trend, obv_divergence, timestamp
-            FROM coin_snapshots
-            WHERE symbol = ? AND date = ?
-            ORDER BY timestamp ASC
-        """, (symbol, target_date)).fetchall()
-        
-        if not rows:
-            return
-        
-        prices = [r['price'] for r in rows]
-        scores = [r['score'] for r in rows]
-        obv_trends = [r['obv_trend'] for r in rows if r['obv_trend']]
-        
-        avg_score = sum(scores) / len(scores)
-        open_price = prices[0]
-        close_price = prices[-1]
-        high_price = max(prices)
-        low_price = min(prices)
-        price_change_pct = ((close_price - open_price) / open_price * 100) if open_price > 0 else 0
-        
-        avg_grade = (
-            'A+' if avg_score >= 90 else
-            'A' if avg_score >= 80 else
-            'B' if avg_score >= 70 else
-            'C' if avg_score >= 60 else
-            'D' if avg_score >= 50 else
-            'F'
-        )
-        
-        dominant_obv = 'neutral'
-        if obv_trends:
-            from collections import Counter
-            trend_counts = Counter(obv_trends)
-            dominant_obv = trend_counts.most_common(1)[0][0]
-        
-        bullish_div = sum(1 for r in rows if r['obv_divergence'] == 'bullish')
-        bearish_div = sum(1 for r in rows if r['obv_divergence'] == 'bearish')
-        
-        conn.execute("""
-            INSERT OR REPLACE INTO daily_summaries
-            (date, symbol, scan_count, avg_score, avg_grade, open_price, close_price,
-             high_price, low_price, price_change_pct, dominant_obv_trend,
-             bullish_divergence_count, bearish_divergence_count, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            target_date,
-            symbol,
-            len(rows),
-            round(avg_score, 1),
-            avg_grade,
-            open_price,
-            close_price,
-            high_price,
-            low_price,
-            round(price_change_pct, 2),
-            dominant_obv,
-            bullish_div,
-            bearish_div,
-            datetime.utcnow().isoformat()
-        ))
-    
-    def get_coin_daily_history(
-        self,
-        symbol: str,
-        limit: int = 30,
-        before_date: Optional[str] = None
-    ) -> Tuple[List[Dict], Optional[str]]:
-        """Get paginated daily history for a coin."""
+            if conn.execute("SELECT COUNT(*) FROM daily_summaries WHERE date = ?", (target_date,)).fetchone()[0] > 0: return
+            for (symbol,) in conn.execute("SELECT DISTINCT symbol FROM coin_snapshots WHERE date = ?", (target_date,)).fetchall():
+                rows = conn.execute("SELECT price, score, obv_trend, obv_divergence FROM coin_snapshots WHERE symbol = ? AND date = ? ORDER BY timestamp", (symbol, target_date)).fetchall()
+                if not rows: continue
+                prices, scores = [r['price'] for r in rows], [r['score'] for r in rows]
+                avg_score = sum(scores) / len(scores)
+                conn.execute("""INSERT OR REPLACE INTO daily_summaries (date, symbol, scan_count, avg_score, avg_grade, open_price, close_price, high_price, low_price, price_change_pct, dominant_obv_trend, bullish_divergence_count, bearish_divergence_count, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (target_date, symbol, len(rows), round(avg_score, 1), 'A+' if avg_score >= 90 else 'A' if avg_score >= 80 else 'B' if avg_score >= 70 else 'C' if avg_score >= 60 else 'D' if avg_score >= 50 else 'F',
+                     prices[0], prices[-1], max(prices), min(prices), round((prices[-1] - prices[0]) / prices[0] * 100, 2) if prices[0] > 0 else 0,
+                     'neutral', sum(1 for r in rows if r['obv_divergence'] == 'bullish'), sum(1 for r in rows if r['obv_divergence'] == 'bearish'), datetime.utcnow().isoformat()))
+            logger.info(f"Aggregated for {target_date}")
+
+    def get_coin_daily_history(self, symbol: str, limit: int = 30, before_date: Optional[str] = None) -> Tuple[List[Dict], Optional[str]]:
         with self.get_connection() as conn:
-            if before_date:
-                rows = conn.execute("""
-                    SELECT date, avg_score, avg_grade, open_price, close_price,
-                           price_change_pct, scan_count, dominant_obv_trend,
-                           bullish_divergence_count, bearish_divergence_count
-                    FROM daily_summaries
-                    WHERE symbol = ? AND date < ?
-                    ORDER BY date DESC
-                    LIMIT ?
-                """, (symbol, before_date, limit + 1)).fetchall()
-            else:
-                rows = conn.execute("""
-                    SELECT date, avg_score, avg_grade, open_price, close_price,
-                           price_change_pct, scan_count, dominant_obv_trend,
-                           bullish_divergence_count, bearish_divergence_count
-                    FROM daily_summaries
-                    WHERE symbol = ?
-                    ORDER BY date DESC
-                    LIMIT ?
-                """, (symbol, limit + 1)).fetchall()
-            
+            q = "SELECT * FROM daily_summaries WHERE symbol = ?" + (" AND date < ?" if before_date else "") + " ORDER BY date DESC LIMIT ?"
+            rows = conn.execute(q, (symbol, before_date, limit + 1) if before_date else (symbol, limit + 1)).fetchall()
             has_more = len(rows) > limit
-            rows = rows[:limit]
-            
-            results = [
-                {
-                    'date': row['date'],
-                    'avg_score': row['avg_score'],
-                    'avg_grade': row['avg_grade'],
-                    'open_price': row['open_price'],
-                    'close_price': row['close_price'],
-                    'price_change_pct': row['price_change_pct'],
-                    'scan_count': row['scan_count'],
-                    'dominant_obv_trend': row['dominant_obv_trend'],
-                    'bullish_divergence_count': row['bullish_divergence_count'],
-                    'bearish_divergence_count': row['bearish_divergence_count']
-                }
-                for row in rows
-            ]
-            
-            next_cursor = rows[-1]['date'] if has_more and rows else None
-            
-            return results, next_cursor
-    
+            return [dict(r) for r in rows[:limit]], (rows[-1]['date'] if has_more and rows else None)
+
     def get_today_stats(self, symbol: str) -> Optional[Dict]:
-        """Get today's running stats (not yet aggregated)."""
         today = datetime.utcnow().strftime('%Y-%m-%d')
-        
         with self.get_connection() as conn:
-            rows = conn.execute("""
-                SELECT price, score, grade
-                FROM coin_snapshots
-                WHERE symbol = ? AND date = ?
-                ORDER BY timestamp ASC
-            """, (symbol, today)).fetchall()
-            
-            if not rows:
-                return None
-            
-            prices = [r['price'] for r in rows]
-            scores = [r['score'] for r in rows]
-            
-            avg_score = sum(scores) / len(scores)
-            avg_grade = (
-                'A+' if avg_score >= 90 else
-                'A' if avg_score >= 80 else
-                'B' if avg_score >= 70 else
-                'C' if avg_score >= 60 else
-                'D' if avg_score >= 50 else
-                'F'
-            )
-            
-            return {
-                'date': today,
-                'avg_score': round(avg_score, 1),
-                'avg_grade': avg_grade,
-                'open_price': prices[0],
-                'current_price': prices[-1],
-                'price_change_pct': round((prices[-1] - prices[0]) / prices[0] * 100, 2) if prices[0] > 0 else 0,
-                'scan_count': len(rows),
-                'is_today': True
-            }
-    
-    def get_grade_performance_summary(self, days: int = 30) -> Dict:
-        """Get performance summary grouped by grade."""
-        cutoff = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%d')
-        
-        with self.get_connection() as conn:
-            rows = conn.execute("""
-                SELECT 
-                    avg_grade as grade,
-                    COUNT(*) as count,
-                    AVG(price_change_pct) as avg_change,
-                    SUM(CASE WHEN price_change_pct > 0 THEN 1 ELSE 0 END) as positive_count
-                FROM daily_summaries
-                WHERE date >= ?
-                GROUP BY avg_grade
-            """, (cutoff,)).fetchall()
-            
-            return {
-                row['grade']: {
-                    'count': row['count'],
-                    'avg_change': round(row['avg_change'], 2) if row['avg_change'] else 0,
-                    'win_rate': round(row['positive_count'] / row['count'] * 100, 1) if row['count'] > 0 else 0
-                }
-                for row in rows
-            }
-    
+            rows = conn.execute("SELECT price, score FROM coin_snapshots WHERE symbol = ? AND date = ? ORDER BY timestamp", (symbol, today)).fetchall()
+            if not rows: return None
+            prices, scores = [r['price'] for r in rows], [r['score'] for r in rows]
+            avg = sum(scores) / len(scores)
+            return {'date': today, 'avg_score': round(avg, 1), 'avg_grade': 'A+' if avg >= 90 else 'A' if avg >= 80 else 'B' if avg >= 70 else 'C' if avg >= 60 else 'D' if avg >= 50 else 'F',
+                    'open_price': prices[0], 'current_price': prices[-1], 'price_change_pct': round((prices[-1] - prices[0]) / prices[0] * 100, 2) if prices[0] > 0 else 0, 'scan_count': len(rows), 'is_today': True}
+
     def cleanup_old_snapshots(self, keep_days: int = 90):
-        """Remove old raw snapshots to save space (keeps summaries)."""
-        cutoff = (datetime.utcnow() - timedelta(days=keep_days)).strftime('%Y-%m-%d')
-        
         with self.get_connection() as conn:
-            result = conn.execute(
-                "DELETE FROM coin_snapshots WHERE date < ?",
-                (cutoff,)
-            )
-            if result.rowcount > 0:
-                logger.info(f"Cleaned up {result.rowcount} old snapshots")
-                conn.execute("VACUUM")
+            r = conn.execute("DELETE FROM coin_snapshots WHERE date < ?", ((datetime.utcnow() - timedelta(days=keep_days)).strftime('%Y-%m-%d'),))
+            if r.rowcount > 0: logger.info(f"Cleaned {r.rowcount} old snapshots"); conn.execute("VACUUM")
 
 
 class MarketAnalyzer:
     def __init__(self):
         self.exchange = self._init_exchange()
         self.spot_exchange = self._init_spot_exchange()
-        
-        self.coins = [
-            'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT',
-            'ADA/USDT', 'AVAX/USDT', 'DOT/USDT', 'LINK/USDT', 'MATIC/USDT',
-            'ATOM/USDT', 'NEAR/USDT', 'APT/USDT', 'ARB/USDT', 'OP/USDT',
-            'SUI/USDT', 'INJ/USDT', 'FET/USDT', 'TIA/USDT', 'SEI/USDT',
-            'DOGE/USDT', 'PEPE/USDT', 'WIF/USDT', 'SHIB/USDT', 'LTC/USDT',
-            'BCH/USDT', 'ETC/USDT', 'FIL/USDT', 'IMX/USDT', 'RENDER/USDT',
-            'MAGIC/USDT', 'LIT/USDT', 'ZEN/USDT', 'ZEC/USDT', 'PUMP/USDT'
-        ]
-        
-        self.weights = {
-            'volume': 20,
-            'obv': 35,
-            'funding': 20,
-            'rsi': 25
-        }
+        self.coins = ALL_COINS.copy()
+        self.weights = {'volume': 20, 'obv': 35, 'funding': 20, 'rsi': 25}
         self._normalize_weights()
-        
         self.obv_lookback = 14
         self.rsi_period = 14
-        
         self.cache = {}
         self.cache_duration = 60
-        
-        logger.info(f"Market Analyzer initialized with {len(self.coins)} coins")
-    
+        logger.info(f"Analyzer initialized with {len(self.coins)} coins")
+
     def _normalize_weights(self):
         total = sum(self.weights.values())
-        if total != 100:
-            factor = 100 / total
-            self.weights = {k: round(v * factor, 1) for k, v in self.weights.items()}
-    
+        if total != 100: self.weights = {k: round(v * 100 / total, 1) for k, v in self.weights.items()}
+
     def update_weights(self, new_weights: Dict[str, float]):
-        for key in ['volume', 'obv', 'funding', 'rsi']:
-            if key in new_weights:
-                self.weights[key] = new_weights[key]
+        for k in ['volume', 'obv', 'funding', 'rsi']:
+            if k in new_weights: self.weights[k] = new_weights[k]
         self._normalize_weights()
-        logger.info(f"Weights updated: {self.weights}")
-    
+
     def _init_exchange(self) -> ccxt.Exchange:
-        api_key = os.getenv('BINANCE_API_KEY', '')
-        secret_key = os.getenv('BINANCE_SECRET_KEY', '')
-        
-        exchange = ccxt.binance({
-            'apiKey': api_key,
-            'secret': secret_key,
-            'enableRateLimit': True,
-            'options': {
-                'defaultType': 'future',
-                'adjustForTimeDifference': True
-            }
-        })
-        
-        try:
-            exchange.load_markets()
-            logger.info(f"Connected to Binance - {len(exchange.markets)} markets")
-        except Exception as e:
-            logger.error(f"Failed to connect to Binance: {e}")
-        
-        return exchange
-    
+        ex = ccxt.binance({'apiKey': os.getenv('BINANCE_API_KEY', ''), 'secret': os.getenv('BINANCE_SECRET_KEY', ''),
+            'enableRateLimit': True, 'options': {'defaultType': 'future', 'adjustForTimeDifference': True}})
+        try: ex.load_markets(); logger.info(f"Connected to Binance Futures")
+        except Exception as e: logger.error(f"Binance error: {e}")
+        return ex
+
     def _init_spot_exchange(self) -> ccxt.Exchange:
-        exchange = ccxt.binance({
-            'enableRateLimit': True,
-            'options': {'defaultType': 'spot'}
-        })
-        try:
-            exchange.load_markets()
-            logger.info("Connected to Binance Spot")
-        except Exception as e:
-            logger.error(f"Failed to connect to Binance Spot: {e}")
-        return exchange
-    
+        ex = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'spot'}})
+        try: ex.load_markets(); logger.info("Connected to Binance Spot")
+        except Exception as e: logger.error(f"Spot error: {e}")
+        return ex
+
     async def get_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 200) -> pd.DataFrame:
         cache_key = f"{symbol}_{timeframe}_{limit}"
-        now = time.time()
-        
-        if cache_key in self.cache:
-            if now - self.cache[cache_key]['time'] < self.cache_duration:
-                return self.cache[cache_key]['data'].copy()
-        
+        if cache_key in self.cache and time.time() - self.cache[cache_key]['time'] < self.cache_duration:
+            return self.cache[cache_key]['data'].copy()
         try:
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-            
-            if not ohlcv or len(ohlcv) < 50:
-                return pd.DataFrame()
-            
+            if not ohlcv or len(ohlcv) < 50: return pd.DataFrame()
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
-            
-            self.cache[cache_key] = {'data': df.copy(), 'time': now}
+            self.cache[cache_key] = {'data': df.copy(), 'time': time.time()}
             return df
-            
-        except Exception as e:
-            logger.debug(f"Error fetching {symbol}: {e}")
-            return pd.DataFrame()
-    
+        except: return pd.DataFrame()
+
     async def get_funding_rate(self, symbol: str) -> float:
-        try:
-            funding = self.exchange.fetch_funding_rate(symbol)
-            return funding.get('fundingRate', 0) or 0
-        except:
-            return 0
-    
+        try: return self.exchange.fetch_funding_rate(symbol).get('fundingRate', 0) or 0
+        except: return 0
+
     async def get_spot_volume(self, symbol: str) -> Dict:
         try:
             ohlcv = self.spot_exchange.fetch_ohlcv(symbol, '1h', limit=48)
             if ohlcv and len(ohlcv) >= 48:
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df['vol_usdt'] = df['volume'] * df['close']
-                
-                vol_24h = float(df['vol_usdt'].iloc[-24:].sum())
-                vol_prev_24h = float(df['vol_usdt'].iloc[-48:-24].sum())
-                vol_change = ((vol_24h - vol_prev_24h) / vol_prev_24h * 100) if vol_prev_24h > 0 else 0
-                
-                return {'volume': vol_24h, 'change': round(vol_change, 1)}
+                v24, vp24 = float(df['vol_usdt'].iloc[-24:].sum()), float(df['vol_usdt'].iloc[-48:-24].sum())
+                return {'volume': v24, 'change': round((v24 - vp24) / vp24 * 100, 1) if vp24 > 0 else 0}
             return {'volume': 0, 'change': 0}
-        except:
-            return {'volume': 0, 'change': 0}
-    
+        except: return {'volume': 0, 'change': 0}
+
     def calculate_indicators(self, df: pd.DataFrame) -> Dict:
-        if df.empty or len(df) < 50:
-            return {}
-        
+        if df.empty or len(df) < 50: return {}
         try:
-            close = df['close']
-            high = df['high']
-            low = df['low']
-            volume = df['volume']
-            
-            current_price = float(close.iloc[-1])
-            
-            # ATR using ta library
-            atr_series = ta_lib.volatility.average_true_range(high, low, close, window=14)
-            atr = float(atr_series.iloc[-1]) if atr_series is not None and not pd.isna(atr_series.iloc[-1]) else 0
-            atr_percent = (atr / current_price * 100) if current_price > 0 else 2.0
-            
-            divergence_threshold = max(1.5, min(atr_percent * 1.5, 5.0))
+            close, high, low, volume = df['close'], df['high'], df['low'], df['volume']
+            price = float(close.iloc[-1])
+            atr = ta_lib.volatility.average_true_range(high, low, close, window=14)
+            atr_val = float(atr.iloc[-1]) if atr is not None and not pd.isna(atr.iloc[-1]) else 0
+            atr_pct = (atr_val / price * 100) if price > 0 else 2.0
+            div_thresh = max(1.5, min(atr_pct * 1.5, 5.0))
             
             if len(volume) >= 48:
-                volume_24h = float(volume.iloc[-25:-1].sum())
-                volume_prev_24h = float(volume.iloc[-49:-25].sum())
-                volume_ratio = volume_24h / volume_prev_24h if volume_prev_24h > 0 else 1.0
+                vol_ratio = float(volume.iloc[-25:-1].sum()) / float(volume.iloc[-49:-25].sum()) if float(volume.iloc[-49:-25].sum()) > 0 else 1.0
             else:
-                volume_ma = float(volume.iloc[-20:-1].mean())
-                last_volume = float(volume.iloc[-2])
-                volume_ratio = last_volume / volume_ma if volume_ma > 0 else 1.0
-            
-            # OBV using ta library
-            obv_series = ta_lib.volume.on_balance_volume(close, volume)
-            if obv_series is not None and len(obv_series) >= self.obv_lookback:
-                obv_current = float(obv_series.iloc[-1])
-                obv_prev = float(obv_series.iloc[-self.obv_lookback])
-                obv_change = ((obv_current - obv_prev) / abs(obv_prev) * 100) if obv_prev != 0 else 0
-                
-                obv_recent = obv_series.tail(14).values
-                obv_slope = np.polyfit(range(len(obv_recent)), obv_recent, 1)[0]
-                obv_slope_norm = obv_slope / abs(obv_current) * 1000 if obv_current != 0 else 0
-                
-                if obv_slope_norm > 0.5:
-                    obv_trend = 'bullish'
-                    obv_strength = 'strong' if obv_slope_norm > 1.5 else 'moderate'
-                elif obv_slope_norm < -0.5:
-                    obv_trend = 'bearish'
-                    obv_strength = 'strong' if obv_slope_norm < -1.5 else 'moderate'
-                else:
-                    obv_trend = 'neutral'
-                    obv_strength = 'weak'
-                
-                price_change_14 = ((current_price - float(close.iloc[-14])) / float(close.iloc[-14]) * 100)
-                obv_divergence = 'none'
-                
-                if price_change_14 < -divergence_threshold and obv_change > divergence_threshold:
-                    obv_divergence = 'bullish'
-                elif price_change_14 > divergence_threshold and obv_change < -divergence_threshold:
-                    obv_divergence = 'bearish'
+                vol_ratio = float(volume.iloc[-2]) / float(volume.iloc[-20:-1].mean()) if float(volume.iloc[-20:-1].mean()) > 0 else 1.0
+
+            obv = ta_lib.volume.on_balance_volume(close, volume)
+            if obv is not None and len(obv) >= self.obv_lookback:
+                obv_cur, obv_prev = float(obv.iloc[-1]), float(obv.iloc[-self.obv_lookback])
+                obv_chg = ((obv_cur - obv_prev) / abs(obv_prev) * 100) if obv_prev != 0 else 0
+                obv_slope = np.polyfit(range(14), obv.tail(14).values, 1)[0]
+                obv_slope_n = obv_slope / abs(obv_cur) * 1000 if obv_cur != 0 else 0
+                obv_trend = 'bullish' if obv_slope_n > 0.5 else 'bearish' if obv_slope_n < -0.5 else 'neutral'
+                obv_strength = 'strong' if abs(obv_slope_n) > 1.5 else 'moderate' if abs(obv_slope_n) > 0.5 else 'weak'
+                price_chg = ((price - float(close.iloc[-14])) / float(close.iloc[-14]) * 100)
+                obv_div = 'bullish' if price_chg < -div_thresh and obv_chg > div_thresh else 'bearish' if price_chg > div_thresh and obv_chg < -div_thresh else 'none'
             else:
-                obv_current = obv_change = 0
-                obv_trend = 'neutral'
-                obv_strength = 'weak'
-                obv_divergence = 'none'
-                divergence_threshold = 2.0
-            
-            # RSI using ta library
-            rsi_series = ta_lib.momentum.rsi(close, window=self.rsi_period)
-            current_rsi = float(rsi_series.iloc[-1]) if rsi_series is not None and not pd.isna(rsi_series.iloc[-1]) else 50
-            
-            # SMAs using ta library
-            sma_20_series = ta_lib.trend.sma_indicator(close, window=20)
-            sma_50_series = ta_lib.trend.sma_indicator(close, window=50) if len(close) >= 50 else None
-            sma_200_series = ta_lib.trend.sma_indicator(close, window=200) if len(close) >= 200 else None
-            
-            sma_20_val = float(sma_20_series.iloc[-1]) if sma_20_series is not None and not pd.isna(sma_20_series.iloc[-1]) else current_price
-            sma_50_val = float(sma_50_series.iloc[-1]) if sma_50_series is not None and not pd.isna(sma_50_series.iloc[-1]) else sma_20_val
-            sma_200_val = float(sma_200_series.iloc[-1]) if sma_200_series is not None and not pd.isna(sma_200_series.iloc[-1]) else sma_50_val
-            
-            if current_price > sma_20_val > sma_50_val:
-                trend = 'uptrend'
-            elif current_price < sma_20_val < sma_50_val:
-                trend = 'downtrend'
-            else:
-                trend = 'sideways'
-            
-            price_change_24h = ((current_price - float(close.iloc[-24])) / float(close.iloc[-24]) * 100) if len(close) >= 24 else 0
-            
-            # MACD using ta library
-            macd_line = ta_lib.trend.macd(close)
-            macd_signal = ta_lib.trend.macd_signal(close)
-            macd_bullish = False
-            if macd_line is not None and macd_signal is not None:
-                if not pd.isna(macd_line.iloc[-1]) and not pd.isna(macd_signal.iloc[-1]):
-                    macd_bullish = float(macd_line.iloc[-1]) > float(macd_signal.iloc[-1])
-            
-            return {
-                'price': round(current_price, 6),
-                'price_change_24h': round(price_change_24h, 2),
-                'volume_ratio': round(volume_ratio, 2),
-                'obv': round(obv_current, 2),
-                'obv_change': round(obv_change, 2),
-                'obv_trend': obv_trend,
-                'obv_strength': obv_strength,
-                'obv_divergence': obv_divergence,
-                'divergence_threshold': round(divergence_threshold, 2),
-                'rsi': round(current_rsi, 2),
-                'sma_20': round(sma_20_val, 6),
-                'sma_50': round(sma_50_val, 6),
-                'sma_200': round(sma_200_val, 6),
-                'trend': trend,
-                'atr_percent': round(atr_percent, 2),
-                'macd_bullish': macd_bullish
-            }
+                obv_cur, obv_chg, obv_trend, obv_strength, obv_div = 0, 0, 'neutral', 'weak', 'none'
+
+            rsi = ta_lib.momentum.rsi(close, window=self.rsi_period)
+            rsi_val = float(rsi.iloc[-1]) if rsi is not None and not pd.isna(rsi.iloc[-1]) else 50
+
+            sma20 = ta_lib.trend.sma_indicator(close, window=20)
+            sma50 = ta_lib.trend.sma_indicator(close, window=50) if len(close) >= 50 else None
+            sma20_v = float(sma20.iloc[-1]) if sma20 is not None and not pd.isna(sma20.iloc[-1]) else price
+            sma50_v = float(sma50.iloc[-1]) if sma50 is not None and not pd.isna(sma50.iloc[-1]) else sma20_v
+            trend = 'uptrend' if price > sma20_v > sma50_v else 'downtrend' if price < sma20_v < sma50_v else 'sideways'
+            price_chg_24h = ((price - float(close.iloc[-24])) / float(close.iloc[-24]) * 100) if len(close) >= 24 else 0
+
+            macd_l, macd_s = ta_lib.trend.macd(close), ta_lib.trend.macd_signal(close)
+            macd_bull = float(macd_l.iloc[-1]) > float(macd_s.iloc[-1]) if macd_l is not None and macd_s is not None and not pd.isna(macd_l.iloc[-1]) and not pd.isna(macd_s.iloc[-1]) else False
+
+            return {'price': round(price, 6), 'price_change_24h': round(price_chg_24h, 2), 'volume_ratio': round(vol_ratio, 2),
+                    'obv': round(obv_cur, 2), 'obv_change': round(obv_chg, 2), 'obv_trend': obv_trend, 'obv_strength': obv_strength,
+                    'obv_divergence': obv_div, 'divergence_threshold': round(div_thresh, 2), 'rsi': round(rsi_val, 2),
+                    'sma_20': round(sma20_v, 6), 'sma_50': round(sma50_v, 6), 'trend': trend, 'atr_percent': round(atr_pct, 2), 'macd_bullish': macd_bull}
         except Exception as e:
-            logger.error(f"Error calculating indicators: {e}")
+            logger.error(f"Indicator error: {e}")
             return {}
-    
-    def score_coin(self, indicators: Dict, funding_rate: float) -> Dict:
-        scores = {}
-        details = []
+
+    def score_coin(self, ind: Dict, funding: float) -> Dict:
+        scores, details = {}, []
+        vr = ind.get('volume_ratio', 1.0)
+        scores['volume'] = 100 if vr >= 1.5 else 80 if vr >= 1.1 else 60 if vr >= 0.8 else 40
         
-        volume_ratio = indicators.get('volume_ratio', 1.0)
-        if volume_ratio >= 1.5:
-            scores['volume'] = 100
-            details.append(('volume', 'high', self.weights['volume']))
-        elif volume_ratio >= 1.1:
-            scores['volume'] = 80
-            details.append(('volume', 'good', round(self.weights['volume'] * 0.8, 1)))
-        elif volume_ratio >= 0.8:
-            scores['volume'] = 60
-            details.append(('volume', 'normal', round(self.weights['volume'] * 0.6, 1)))
-        else:
-            scores['volume'] = 40
-            details.append(('volume', 'low', round(self.weights['volume'] * 0.4, 1)))
+        ot, os, od = ind.get('obv_trend', 'neutral'), ind.get('obv_strength', 'weak'), ind.get('obv_divergence', 'none')
+        scores['obv'] = 100 if ot == 'bullish' and os == 'strong' else 80 if ot == 'bullish' else 20 if ot == 'bearish' and os == 'strong' else 40 if ot == 'bearish' else 60
+        if od == 'bullish': scores['obv'] = min(100, scores['obv'] + 15)
+        elif od == 'bearish': scores['obv'] = max(0, scores['obv'] - 15)
+
+        fp = funding * 100
+        scores['funding'] = 100 if -0.005 <= fp <= 0.005 else 80 if -0.01 <= fp <= 0.01 else 60 if -0.02 <= fp <= 0.02 else 20
         
-        obv_trend = indicators.get('obv_trend', 'neutral')
-        obv_strength = indicators.get('obv_strength', 'weak')
-        obv_divergence = indicators.get('obv_divergence', 'none')
-        
-        if obv_trend == 'bullish' and obv_strength == 'strong':
-            scores['obv'] = 100
-            details.append(('obv', 'strong_buying', self.weights['obv']))
-        elif obv_trend == 'bullish':
-            scores['obv'] = 80
-            details.append(('obv', 'buying', round(self.weights['obv'] * 0.8, 1)))
-        elif obv_trend == 'bearish' and obv_strength == 'strong':
-            scores['obv'] = 20
-            details.append(('obv', 'strong_selling', round(self.weights['obv'] * 0.2, 1)))
-        elif obv_trend == 'bearish':
-            scores['obv'] = 40
-            details.append(('obv', 'selling', round(self.weights['obv'] * 0.4, 1)))
-        else:
-            scores['obv'] = 60
-            details.append(('obv', 'neutral', round(self.weights['obv'] * 0.6, 1)))
-        
-        if obv_divergence == 'bullish':
-            scores['obv'] = min(100, scores['obv'] + 15)
-        elif obv_divergence == 'bearish':
-            scores['obv'] = max(0, scores['obv'] - 15)
-        
-        funding_pct = funding_rate * 100
-        if -0.005 <= funding_pct <= 0.005:
-            scores['funding'] = 100
-            details.append(('funding', 'neutral', self.weights['funding']))
-        elif -0.01 <= funding_pct <= 0.01:
-            scores['funding'] = 80
-            details.append(('funding', 'healthy', round(self.weights['funding'] * 0.8, 1)))
-        elif -0.02 <= funding_pct <= 0.02:
-            scores['funding'] = 60
-            details.append(('funding', 'moderate', round(self.weights['funding'] * 0.6, 1)))
-        else:
-            scores['funding'] = 20
-            details.append(('funding', 'extreme', round(self.weights['funding'] * 0.2, 1)))
-        
-        rsi = indicators.get('rsi', 50)
-        if 40 <= rsi <= 60:
-            scores['rsi'] = 100
-            details.append(('rsi', 'neutral', self.weights['rsi']))
-        elif 30 <= rsi <= 70:
-            scores['rsi'] = 80
-            details.append(('rsi', 'healthy', round(self.weights['rsi'] * 0.8, 1)))
-        elif 20 <= rsi <= 80:
-            scores['rsi'] = 40
-            details.append(('rsi', 'extended', round(self.weights['rsi'] * 0.4, 1)))
-        else:
-            scores['rsi'] = 20
-            details.append(('rsi', 'extreme', round(self.weights['rsi'] * 0.2, 1)))
-        
-        total_score = sum(scores[k] * (self.weights[k] / 100) for k in scores)
-        
-        grade = (
-            'A+' if total_score >= 90 else
-            'A' if total_score >= 80 else
-            'B' if total_score >= 70 else
-            'C' if total_score >= 60 else
-            'D' if total_score >= 50 else
-            'F'
-        )
-        
-        return {
-            'total_score': round(total_score),
-            'percentage': round(total_score, 1),
-            'breakdown': details,
-            'component_scores': scores,
-            'grade': grade,
-            'weights_used': self.weights.copy()
-        }
-    
-    async def analyze_coin(self, symbol: str) -> Dict:
+        rsi = ind.get('rsi', 50)
+        scores['rsi'] = 100 if 40 <= rsi <= 60 else 80 if 30 <= rsi <= 70 else 40 if 20 <= rsi <= 80 else 20
+
+        total = sum(scores[k] * (self.weights[k] / 100) for k in scores)
+        grade = 'A+' if total >= 90 else 'A' if total >= 80 else 'B' if total >= 70 else 'C' if total >= 60 else 'D' if total >= 50 else 'F'
+        return {'total_score': round(total), 'percentage': round(total, 1), 'component_scores': scores, 'grade': grade, 'weights_used': self.weights.copy()}
+
+    async def analyze_coin(self, symbol: str) -> Optional[Dict]:
         try:
-            df_1h = await self.get_ohlcv(symbol, '1h', 200)
-            df_4h = await self.get_ohlcv(symbol, '4h', 100)
-            
-            if df_1h.empty:
-                return None
-            
-            indicators_1h = self.calculate_indicators(df_1h)
-            indicators_4h = self.calculate_indicators(df_4h) if not df_4h.empty else {}
-            
-            if not indicators_1h:
-                return None
-            
-            funding_rate = await self.get_funding_rate(symbol)
-            spot_data = await self.get_spot_volume(symbol)
-            
-            price = indicators_1h.get('price', 1)
-            vol_24h = float(df_1h['volume'].iloc[-25:-1].sum()) * price
-            vol_prev_24h = float(df_1h['volume'].iloc[-49:-25].sum()) * price if len(df_1h) >= 49 else vol_24h
-            futures_vol_change = ((vol_24h - vol_prev_24h) / vol_prev_24h * 100) if vol_prev_24h > 0 else 0
-            
-            score_data = self.score_coin(indicators_1h, funding_rate)
-            
-            display_name = symbol.replace('/USDT', '')
-            
-            return {
-                'symbol': symbol,
-                'display_name': display_name,
-                'timestamp': datetime.utcnow().isoformat(),
-                'price': indicators_1h.get('price', 0),
-                'price_change_24h': indicators_1h.get('price_change_24h', 0),
-                'indicators': {'1h': indicators_1h, '4h': indicators_4h},
-                'funding_rate': round(funding_rate * 100, 4),
-                'spot_volume': round(spot_data['volume'], 0),
-                'spot_volume_change': round(spot_data['change'], 1),
-                'futures_volume': round(vol_24h, 0),
-                'futures_volume_change': round(futures_vol_change, 1),
-                'score': score_data,
-                'signals': self._generate_signals(indicators_1h, indicators_4h, funding_rate)
-            }
+            df_1h, df_4h = await self.get_ohlcv(symbol, '1h', 200), await self.get_ohlcv(symbol, '4h', 100)
+            if df_1h.empty: return None
+            ind_1h = self.calculate_indicators(df_1h)
+            ind_4h = self.calculate_indicators(df_4h) if not df_4h.empty else {}
+            if not ind_1h: return None
+            funding = await self.get_funding_rate(symbol)
+            spot = await self.get_spot_volume(symbol)
+            price = ind_1h.get('price', 1)
+            fv = float(df_1h['volume'].iloc[-25:-1].sum()) * price
+            fvp = float(df_1h['volume'].iloc[-49:-25].sum()) * price if len(df_1h) >= 49 else fv
+            fvc = ((fv - fvp) / fvp * 100) if fvp > 0 else 0
+            score = self.score_coin(ind_1h, funding)
+            signals = self._gen_signals(ind_1h, ind_4h, funding)
+            return {'symbol': symbol, 'display_name': symbol.replace('/USDT', ''), 'timestamp': datetime.utcnow().isoformat(),
+                    'price': ind_1h.get('price', 0), 'price_change_24h': ind_1h.get('price_change_24h', 0),
+                    'indicators': {'1h': ind_1h, '4h': ind_4h}, 'funding_rate': round(funding * 100, 4),
+                    'spot_volume': round(spot['volume'], 0), 'spot_volume_change': round(spot['change'], 1),
+                    'futures_volume': round(fv, 0), 'futures_volume_change': round(fvc, 1), 'score': score, 'signals': signals}
         except Exception as e:
-            logger.debug(f"Error analyzing {symbol}: {e}")
+            logger.debug(f"Analyze error {symbol}: {e}")
             return None
-    
-    def _generate_signals(self, ind_1h: Dict, ind_4h: Dict, funding: float) -> List[str]:
-        signals = []
-        
-        vol_ratio = ind_1h.get('volume_ratio', 1.0)
-        if vol_ratio >= 1.5:
-            signals.append("[VOL] High 24h activity")
-        elif vol_ratio <= 0.6:
-            signals.append("[VOL] Low 24h activity")
-        
-        obv_trend = ind_1h.get('obv_trend', 'neutral')
-        obv_strength = ind_1h.get('obv_strength', 'weak')
-        obv_divergence = ind_1h.get('obv_divergence', 'none')
-        
-        if obv_trend == 'bullish':
-            if obv_strength == 'strong':
-                signals.append("[OBV] Strong accumulation")
-            else:
-                signals.append("[OBV] Accumulation")
-        elif obv_trend == 'bearish':
-            if obv_strength == 'strong':
-                signals.append("[OBV] Strong distribution")
-            else:
-                signals.append("[OBV] Distribution")
-        
-        if obv_divergence == 'bullish':
-            signals.append("[OBV] Bullish divergence!")
-        elif obv_divergence == 'bearish':
-            signals.append("[OBV] Bearish divergence!")
-        
-        rsi = ind_1h.get('rsi', 50)
-        if rsi < 30:
-            signals.append("[RSI] Oversold")
-        elif rsi > 70:
-            signals.append("[RSI] Overbought")
-        
-        funding_pct = funding * 100
-        if funding_pct > 0.03:
-            signals.append("[FUND] Longs paying")
-        elif funding_pct < -0.03:
-            signals.append("[FUND] Shorts paying")
-        
-        trend_1h = ind_1h.get('trend', 'sideways')
-        trend_4h = ind_4h.get('trend', 'sideways') if ind_4h else 'sideways'
-        
-        if trend_1h == 'uptrend' and trend_4h == 'uptrend':
-            signals.append("[TREND] Bullish alignment")
-        elif trend_1h == 'downtrend' and trend_4h == 'downtrend':
-            signals.append("[TREND] Bearish alignment")
-        
-        if ind_1h.get('macd_bullish'):
-            signals.append("[MACD] Bullish")
-        
-        return signals if signals else ["No signals"]
-    
+
+    def _gen_signals(self, i1: Dict, i4: Dict, f: float) -> List[str]:
+        s = []
+        vr = i1.get('volume_ratio', 1.0)
+        if vr >= 1.5: s.append("[VOL] High 24h activity")
+        elif vr <= 0.6: s.append("[VOL] Low 24h activity")
+        ot, os, od = i1.get('obv_trend', 'neutral'), i1.get('obv_strength', 'weak'), i1.get('obv_divergence', 'none')
+        if ot == 'bullish': s.append("[OBV] Strong accumulation" if os == 'strong' else "[OBV] Accumulation")
+        elif ot == 'bearish': s.append("[OBV] Strong distribution" if os == 'strong' else "[OBV] Distribution")
+        if od == 'bullish': s.append("[OBV] Bullish divergence!")
+        elif od == 'bearish': s.append("[OBV] Bearish divergence!")
+        rsi = i1.get('rsi', 50)
+        if rsi < 30: s.append("[RSI] Oversold")
+        elif rsi > 70: s.append("[RSI] Overbought")
+        if f * 100 > 0.03: s.append("[FUND] Longs paying")
+        elif f * 100 < -0.03: s.append("[FUND] Shorts paying")
+        t1, t4 = i1.get('trend', 'sideways'), i4.get('trend', 'sideways') if i4 else 'sideways'
+        if t1 == 'uptrend' and t4 == 'uptrend': s.append("[TREND] Bullish alignment")
+        elif t1 == 'downtrend' and t4 == 'downtrend': s.append("[TREND] Bearish alignment")
+        if i1.get('macd_bullish'): s.append("[MACD] Bullish")
+        return s if s else ["No signals"]
+
     async def scan_all(self) -> List[Dict]:
         results = []
-        for symbol in self.coins:
+        for sym in self.coins:
             try:
-                result = await self.analyze_coin(symbol)
-                if result:
-                    results.append(result)
+                r = await self.analyze_coin(sym)
+                if r: results.append(r)
                 await asyncio.sleep(0.15)
-            except Exception as e:
-                logger.debug(f"Error scanning {symbol}: {e}")
-        results.sort(key=lambda x: x['score']['total_score'], reverse=True)
-        return results
+            except: pass
+        return sorted(results, key=lambda x: x['score']['total_score'], reverse=True)
 
 
 class AnalyzerApp:
     def __init__(self):
         self.analyzer = MarketAnalyzer()
         self.tracker = HistoricalTracker()
-        self.app = FastAPI(title="Crypto Market Analyzer", version="2.2.0")
+        self.app = FastAPI(title="Crypto Market Analyzer", version="3.0.0")
+        self.app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET)
         self.app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-        
         self.running = False
         self.scan_results = []
         self.last_scan = None
         self.scan_count = 0
         self.scan_interval = 300
         self.websockets: Set[WebSocket] = set()
-        self.startup_time = datetime.now()
-        
         self._setup_routes()
-        logger.info("Analyzer App initialized")
-    
+        logger.info("App initialized")
+
+    def _get_user(self, request: Request) -> Optional[Dict]:
+        uid = request.session.get('user_id')
+        return self.tracker.get_user_by_id(uid) if uid else None
+
+    def _require_auth(self, request: Request) -> Dict:
+        user = self._get_user(request)
+        if not user: raise HTTPException(status_code=401, detail="Not authenticated")
+        return user
+
     def _setup_routes(self):
+        @self.app.get("/auth/login")
+        async def login():
+            url = f"https://accounts.google.com/o/oauth2/v2/auth?client_id={GOOGLE_CLIENT_ID}&redirect_uri={GOOGLE_REDIRECT_URI}&response_type=code&scope=openid%20email%20profile&access_type=offline&prompt=consent"
+            return RedirectResponse(url=url)
+
+        @self.app.get("/auth/callback")
+        async def callback(request: Request, code: str = None, error: str = None):
+            if error or not code: return RedirectResponse(url="/?error=auth_failed")
+            try:
+                async with httpx.AsyncClient() as client:
+                    tr = await client.post("https://oauth2.googleapis.com/token", data={
+                        'client_id': GOOGLE_CLIENT_ID, 'client_secret': GOOGLE_CLIENT_SECRET,
+                        'code': code, 'grant_type': 'authorization_code', 'redirect_uri': GOOGLE_REDIRECT_URI})
+                    tokens = tr.json()
+                    if 'error' in tokens: return RedirectResponse(url="/?error=token_failed")
+                    ui = await client.get("https://www.googleapis.com/oauth2/v2/userinfo", headers={'Authorization': f"Bearer {tokens['access_token']}"})
+                    userinfo = ui.json()
+                user = self.tracker.get_or_create_user(userinfo['id'], userinfo['email'], userinfo.get('name'), userinfo.get('picture'))
+                request.session['user_id'] = user['id']
+                return RedirectResponse(url="/")
+            except Exception as e:
+                logger.error(f"Auth error: {e}")
+                return RedirectResponse(url="/?error=auth_error")
+
+        @self.app.get("/auth/logout")
+        async def logout(request: Request):
+            request.session.clear()
+            return RedirectResponse(url="/")
+
+        @self.app.get("/api/me")
+        async def me(request: Request):
+            user = self._get_user(request)
+            if not user: return JSONResponse({'authenticated': False})
+            return JSONResponse({'authenticated': True, 'user': {'id': user['id'], 'email': user['email'], 'name': user['name'], 'picture': user['picture']}, 'coins': self.tracker.get_user_coins(user['id'])})
+
+        @self.app.post("/api/coins/add")
+        async def add_coin(request: Request):
+            user = self._require_auth(request)
+            body = await request.json()
+            sym = body.get('symbol', '').upper()
+            sym = sym if '/' in sym else sym + '/USDT'
+            if sym not in ALL_COINS: return JSONResponse({'error': 'Invalid coin'}, status_code=400)
+            return JSONResponse({'success': self.tracker.add_user_coin(user['id'], sym), 'symbol': sym})
+
+        @self.app.post("/api/coins/remove")
+        async def remove_coin(request: Request):
+            user = self._require_auth(request)
+            body = await request.json()
+            sym = body.get('symbol', '').upper()
+            sym = sym if '/' in sym else sym + '/USDT'
+            return JSONResponse({'success': self.tracker.remove_user_coin(user['id'], sym), 'symbol': sym})
+
+        @self.app.get("/api/coins/available")
+        async def available(): return JSONResponse({'coins': ALL_COINS})
+
         @self.app.get("/")
-        async def dashboard():
-            return HTMLResponse(content=self._get_dashboard_html())
-        
+        async def dashboard(request: Request):
+            user = self._get_user(request)
+            return HTMLResponse(self._get_dashboard_html() if user else self._get_login_html())
+
         @self.app.get("/api/scan")
-        async def get_scan():
-            return JSONResponse(content={
-                'results': self.scan_results,
-                'last_scan': self.last_scan.isoformat() if self.last_scan else None,
-                'scan_count': self.scan_count,
-                'weights': self.analyzer.weights
-            })
-        
+        async def scan(request: Request):
+            user = self._get_user(request)
+            if not user: return JSONResponse({'error': 'Not authenticated'}, status_code=401)
+            uc = self.tracker.get_user_coins(user['id'])
+            return JSONResponse({'results': [r for r in self.scan_results if r['symbol'] in uc],
+                'last_scan': self.last_scan.isoformat() if self.last_scan else None, 'scan_count': self.scan_count, 'weights': self.analyzer.weights, 'user_coins': uc})
+
         @self.app.get("/api/coin/{symbol}")
-        async def get_coin(symbol: str):
-            symbol = symbol.upper()
-            if '/' not in symbol:
-                symbol = symbol + '/USDT'
-            result = await self.analyzer.analyze_coin(symbol)
-            return JSONResponse(content=result or {'error': 'Not found'})
-        
+        async def coin(request: Request, symbol: str):
+            if not self._get_user(request): return JSONResponse({'error': 'Not authenticated'}, status_code=401)
+            sym = symbol.upper() if '/' in symbol.upper() else symbol.upper() + '/USDT'
+            r = await self.analyzer.analyze_coin(sym)
+            return JSONResponse(r or {'error': 'Not found'})
+
         @self.app.get("/api/coin/{symbol}/history")
-        async def get_coin_history(
-            symbol: str,
-            limit: int = Query(default=30, ge=1, le=100),
-            before: Optional[str] = Query(default=None, description="Cursor for pagination (date string)")
-        ):
-            """Get paginated daily history for a coin."""
-            symbol = symbol.upper()
-            if '/' not in symbol:
-                symbol = symbol + '/USDT'
-            
-            today_stats = self.tracker.get_today_stats(symbol)
-            history, next_cursor = self.tracker.get_coin_daily_history(
-                symbol, limit=limit, before_date=before
-            )
-            
-            return JSONResponse(content={
-                'symbol': symbol,
-                'today': today_stats,
-                'history': history,
-                'next_cursor': next_cursor,
-                'has_more': next_cursor is not None
-            })
-        
+        async def history(request: Request, symbol: str, limit: int = Query(30, ge=1, le=100), before: str = Query(None)):
+            if not self._get_user(request): return JSONResponse({'error': 'Not authenticated'}, status_code=401)
+            sym = symbol.upper() if '/' in symbol.upper() else symbol.upper() + '/USDT'
+            today = self.tracker.get_today_stats(sym)
+            hist, cursor = self.tracker.get_coin_daily_history(sym, limit, before)
+            return JSONResponse({'symbol': sym, 'today': today, 'history': hist, 'next_cursor': cursor, 'has_more': cursor is not None})
+
         @self.app.post("/api/scan/trigger")
-        async def trigger():
+        async def trigger(request: Request):
+            if not self._get_user(request): return JSONResponse({'error': 'Not authenticated'}, status_code=401)
             asyncio.create_task(self._run_scan())
-            return JSONResponse(content={'status': 'triggered'})
-        
+            return JSONResponse({'status': 'triggered'})
+
         @self.app.post("/api/weights")
-        async def update_weights(weights: Dict[str, float]):
-            self.analyzer.update_weights(weights)
-            return JSONResponse(content={'status': 'updated', 'weights': self.analyzer.weights})
-        
+        async def weights(request: Request):
+            if not self._get_user(request): return JSONResponse({'error': 'Not authenticated'}, status_code=401)
+            self.analyzer.update_weights(await request.json())
+            return JSONResponse({'status': 'updated', 'weights': self.analyzer.weights})
+
         @self.app.get("/api/weights")
-        async def get_weights():
-            return JSONResponse(content=self.analyzer.weights)
-        
-        @self.app.get("/api/history/performance")
-        async def get_performance(days: int = Query(default=30, ge=1, le=365)):
-            return JSONResponse(content={
-                'grade_performance': self.tracker.get_grade_performance_summary(days),
-                'days_analyzed': days
-            })
-        
+        async def get_weights(): return JSONResponse(self.analyzer.weights)
+
         @self.app.websocket("/ws")
-        async def ws_endpoint(websocket: WebSocket):
+        async def ws(websocket: WebSocket):
             await websocket.accept()
             self.websockets.add(websocket)
             try:
-                while True:
-                    await asyncio.sleep(30)
-                    await websocket.send_json({'type': 'heartbeat'})
-            except:
-                self.websockets.discard(websocket)
-    
+                while True: await asyncio.sleep(30); await websocket.send_json({'type': 'heartbeat'})
+            except: self.websockets.discard(websocket)
+
     async def _broadcast(self, msg: Dict):
         for ws in list(self.websockets):
-            try:
-                await ws.send_json(msg)
-            except:
-                self.websockets.discard(ws)
-    
+            try: await ws.send_json(msg)
+            except: self.websockets.discard(ws)
+
     async def _run_scan(self):
         logger.info("Starting scan...")
         try:
             self.scan_results = await self.analyzer.scan_all()
             self.last_scan = datetime.now()
             self.scan_count += 1
-            
             self.tracker.log_batch(self.scan_results)
-            
             logger.info(f"Scan #{self.scan_count}: {len(self.scan_results)} coins")
             await self._broadcast({'type': 'scan_complete', 'count': len(self.scan_results)})
-        except Exception as e:
-            logger.error(f"Scan error: {e}")
-    
+        except Exception as e: logger.error(f"Scan error: {e}")
+
     async def scan_loop(self):
-        while self.running:
-            await self._run_scan()
-            await asyncio.sleep(self.scan_interval)
-    
+        while self.running: await self._run_scan(); await asyncio.sleep(self.scan_interval)
+
     async def aggregation_loop(self):
-        """Background task to aggregate daily summaries."""
         while self.running:
             try:
-                now = datetime.utcnow()
                 self.tracker.aggregate_daily_summaries()
-                
-                for days_ago in range(2, 8):
-                    target = (now - timedelta(days=days_ago)).strftime('%Y-%m-%d')
-                    self.tracker.aggregate_daily_summaries(target)
-                
-                if now.day == 1 and now.hour == 0:
-                    self.tracker.cleanup_old_snapshots(keep_days=90)
-                    
-            except Exception as e:
-                logger.error(f"Aggregation error: {e}")
-            
+                for d in range(2, 8): self.tracker.aggregate_daily_summaries((datetime.utcnow() - timedelta(days=d)).strftime('%Y-%m-%d'))
+                if datetime.utcnow().day == 1: self.tracker.cleanup_old_snapshots(90)
+            except Exception as e: logger.error(f"Agg error: {e}")
             await asyncio.sleep(3600)
-    
+
+    def _get_login_html(self) -> str:
+        return '''<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Login</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:linear-gradient(135deg,#0a0a0f,#1a1a2e);min-height:100vh;display:flex;align-items:center;justify-content:center;color:#e8e8ff}
+.c{background:#12121a;border:1px solid #2d2d4a;border-radius:16px;padding:40px;text-align:center;max-width:400px;width:90%}.logo{width:60px;height:60px;background:linear-gradient(135deg,#8b5cf6,#00b4ff);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:bold;margin:0 auto 20px}
+h1{font-size:24px;margin-bottom:10px}p{color:#8888aa;margin-bottom:30px}.btn{display:inline-flex;align-items:center;gap:12px;background:#fff;color:#333;padding:12px 24px;border-radius:8px;font-size:16px;font-weight:500;text-decoration:none}
+.btn:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,0.3)}.f{margin-top:40px;text-align:left;padding:20px;background:#1a1a2e;border-radius:8px}.f h3{font-size:14px;margin-bottom:15px;color:#8b5cf6}.f ul{list-style:none}.f li{padding:8px 0;color:#8888aa;font-size:14px}.f li::before{content:"✓";color:#00d68f;margin-right:8px}</style></head>
+<body><div class="c"><div class="logo">CA</div><h1>Crypto Analyzer</h1><p>Real-time market analysis with OBV signals</p>
+<a href="/auth/login" class="btn"><svg width="20" height="20" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>Sign in with Google</a>
+<div class="f"><h3>Features</h3><ul><li>Real-time OBV analysis for 35+ coins</li><li>Custom watchlist management</li><li>Historical score tracking</li><li>Divergence detection</li></ul></div></div></body></html>'''
+
     def _get_dashboard_html(self) -> str:
         try:
-            with open('templates/dashboard.html', 'r', encoding='utf-8') as f:
-                return f.read()
-        except:
-            return "<html><body><h1>Dashboard not found</h1></body></html>"
+            with open('templates/dashboard.html', 'r', encoding='utf-8') as f: return f.read()
+        except: return "<html><body><h1>Dashboard not found</h1></body></html>"
 
 
 app_instance = None
-
 def get_app():
     global app_instance
-    if app_instance is None:
-        app_instance = AnalyzerApp()
+    if app_instance is None: app_instance = AnalyzerApp()
     return app_instance
 
 app = get_app().app
 
 @app.on_event("startup")
 async def startup():
-    instance = get_app()
-    instance.running = True
-    asyncio.create_task(instance.scan_loop())
-    asyncio.create_task(instance.aggregation_loop())
+    inst = get_app()
+    inst.running = True
+    asyncio.create_task(inst.scan_loop())
+    asyncio.create_task(inst.aggregation_loop())
     logger.info("Started")
 
 @app.on_event("shutdown")
-async def shutdown():
-    get_app().running = False
+async def shutdown(): get_app().running = False
 
 if __name__ == "__main__":
     os.makedirs("templates", exist_ok=True)
