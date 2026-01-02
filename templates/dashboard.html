@@ -51,6 +51,89 @@
     .legend-item{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-secondary);padding:5px 8px;background:var(--bg-tertiary);border-radius:4px}
     .grade-dot{width:8px;height:8px;border-radius:50%}
     .grade-a{background:var(--green)}.grade-b{background:var(--blue)}.grade-c{background:var(--yellow)}.grade-d{background:var(--red)}
+
+    /* Market Regime Display */
+    .regime-card{background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px}
+    .regime-card.bullish{border-color:var(--green);background:rgba(0,214,143,0.1)}
+    .regime-card.bearish{border-color:var(--red);background:rgba(255,77,106,0.1)}
+    .regime-card.neutral{border-color:var(--yellow);background:rgba(255,184,0,0.1)}
+    .regime-name{font-size:13px;font-weight:600;margin-bottom:10px;color:var(--text-primary)}
+    .regime-weights{display:flex;gap:8px;margin-bottom:10px}
+    .regime-weight{flex:1;background:var(--bg-tertiary);border-radius:6px;padding:8px;text-align:center}
+    .weight-label{display:block;font-size:9px;text-transform:uppercase;color:var(--text-secondary);margin-bottom:2px}
+    .weight-value{display:block;font-size:16px;font-weight:700;color:var(--purple)}
+    .regime-reasoning{font-size:11px;line-height:1.5;color:var(--text-secondary);border-top:1px solid var(--border);padding-top:10px}
+    .btc-context{background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:10px}
+    .context-row{display:flex;justify-content:space-between;padding:6px 0;font-size:11px;border-bottom:1px solid var(--border)}
+    .context-row:last-child{border-bottom:none}
+    .context-row span:first-child{color:var(--text-secondary)}
+    .context-row span:last-child{font-weight:600}
+    .context-row .bullish{color:var(--green)}
+    .context-row .bearish{color:var(--red)}
+    .scoring-info{background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:10px;color:var(--text-secondary);line-height:1.6}
+    .scoring-info p{margin:4px 0}
+
+    /* Warnings Display */
+    .weights-used{font-size:10px;color:var(--text-secondary);margin-top:12px;padding-top:10px;border-top:1px solid var(--border);text-align:center}
+    .warnings-section{margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+    .warnings-title{font-size:10px;text-transform:uppercase;color:var(--text-secondary);margin-bottom:8px}
+    .warnings-list{display:flex;flex-direction:column;gap:6px}
+    .warning-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;font-size:11px;border-left:3px solid var(--text-secondary)}
+    .warning-item.bullish{background:rgba(0,214,143,0.1);border-left-color:var(--green)}
+    .warning-item.bearish{background:rgba(255,77,106,0.1);border-left-color:var(--red)}
+    .warning-item.extreme{font-weight:600}
+    .warning-item.signal{background:rgba(139,92,246,0.1);border-left-color:var(--purple)}
+    .warning-type{font-size:9px;padding:2px 6px;background:rgba(255,255,255,0.1);border-radius:4px;text-transform:uppercase;font-weight:600}
+    .warning-msg{flex:1;color:var(--text-primary)}
+    .warning-item.caution{background:rgba(255,184,0,0.1);border-left-color:var(--yellow)}
+
+    /* Structure Status */
+    .structure-status{margin-top:10px;padding:8px 12px;border-radius:6px;font-size:11px;font-weight:600;text-align:center}
+    .structure-status.confirms{background:rgba(0,214,143,0.15);color:var(--green);border:1px solid rgba(0,214,143,0.3)}
+    .structure-status.conflicts{background:rgba(255,184,0,0.15);color:var(--yellow);border:1px solid rgba(255,184,0,0.3)}
+    .structure-status.breakout{background:rgba(0,214,143,0.2);color:var(--green);border:1px solid var(--green)}
+    .structure-status.breakdown{background:rgba(255,77,106,0.2);color:var(--red);border:1px solid var(--red)}
+
+    /* Alert UI */
+    .alert-toggle{display:flex;align-items:center;gap:8px;padding:8px 14px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:6px;cursor:pointer;transition:all 0.2s;font-size:12px;color:var(--text-secondary)}
+    .alert-toggle:hover{border-color:var(--purple)}
+    .alert-toggle.active{background:rgba(139,92,246,0.2);border-color:var(--purple);color:var(--purple)}
+    .alert-modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:1000;opacity:0;visibility:hidden;transition:all 0.2s}
+    .alert-modal.show{opacity:1;visibility:visible}
+    .alert-modal-content{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;width:90%;max-width:420px;max-height:90vh;overflow-y:auto}
+    .alert-modal-header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+    .alert-modal-header h3{margin:0;font-size:16px}
+    .alert-modal-close{background:none;border:none;color:var(--text-secondary);font-size:24px;cursor:pointer;padding:4px 8px;line-height:1}
+    .alert-modal-close:hover{color:var(--text-primary)}
+    .alert-modal-body{padding:20px}
+    .alert-section{margin-bottom:24px}
+    .alert-section:last-child{margin-bottom:0}
+    .alert-section-title{font-size:11px;text-transform:uppercase;color:var(--text-secondary);margin-bottom:12px;font-weight:600;letter-spacing:0.5px}
+    .link-status{padding:16px;background:var(--bg-tertiary);border-radius:8px;text-align:center}
+    .link-status.linked{background:rgba(0,214,143,0.1);border:1px solid rgba(0,214,143,0.3)}
+    .link-status.unlinked{background:rgba(255,184,0,0.1);border:1px solid rgba(255,184,0,0.3)}
+    .link-code{font-family:monospace;font-size:28px;letter-spacing:4px;color:var(--purple);margin:16px 0}
+    .link-instructions{font-size:12px;color:var(--text-secondary);line-height:1.6}
+    .link-instructions ol{margin:12px 0;padding-left:20px}
+    .link-instructions li{margin:6px 0}
+    .link-instructions code{background:var(--bg-secondary);padding:2px 6px;border-radius:4px;color:var(--purple)}
+    .alert-option{display:flex;justify-content:space-between;align-items:center;padding:14px 0;border-bottom:1px solid var(--border)}
+    .alert-option:last-child{border-bottom:none}
+    .alert-option-info{flex:1;padding-right:16px}
+    .alert-option-title{font-size:13px;margin-bottom:4px}
+    .alert-option-desc{font-size:11px;color:var(--text-secondary)}
+    .toggle-switch{position:relative;width:44px;height:24px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:12px;cursor:pointer;transition:all 0.2s;flex-shrink:0}
+    .toggle-switch.active{background:var(--purple);border-color:var(--purple)}
+    .toggle-switch::after{content:'';position:absolute;top:2px;left:2px;width:18px;height:18px;background:white;border-radius:50%;transition:transform 0.2s}
+    .toggle-switch.active::after{transform:translateX(20px)}
+    .alert-btn{width:100%;padding:12px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;margin-top:8px;transition:all 0.2s}
+    .alert-btn.primary{background:var(--purple);color:white}
+    .alert-btn.primary:hover{background:#7c3aed}
+    .alert-btn.secondary{background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border)}
+    .alert-btn.secondary:hover{border-color:var(--text-secondary)}
+    .alert-btn.danger{background:rgba(255,77,106,0.2);color:var(--red);border:1px solid rgba(255,77,106,0.3)}
+    .alert-btn.danger:hover{background:rgba(255,77,106,0.3)}
+    .alert-btn:disabled{opacity:0.5;cursor:not-allowed}
     .content{padding:14px;overflow-y:auto;background:linear-gradient(180deg,#1a1a2e 0%,#0a0a0f 100%);min-height:calc(100vh - 58px)}
 
     /* List View */
@@ -281,18 +364,35 @@
       <div class="stat-card"><div class="stat-label">Your Coins</div><div class="stat-value" id="coins-count">--</div></div>
       <div class="stat-card"><div class="stat-label">High Score (A/B)</div><div class="stat-value positive" id="high-score-count">--</div></div>
       <div class="stat-card"><div class="stat-label">Avg Score</div><div class="stat-value" id="avg-score">--</div></div>
-      <div class="section-title" style="margin-top:16px">Scoring Weights</div>
-      <div class="weight-item"><label>Volume</label><input type="number" id="weight-volume" min="0" max="100" value="20"></div>
-      <div class="weight-item"><label>OBV</label><input type="number" id="weight-obv" min="0" max="100" value="35"></div>
-      <div class="weight-item"><label>Funding</label><input type="number" id="weight-funding" min="0" max="100" value="20"></div>
-      <div class="weight-item"><label>RSI</label><input type="number" id="weight-rsi" min="0" max="100" value="25"></div>
-      <button class="btn" style="width:100%;margin-top:8px" onclick="updateWeights()">Apply</button>
+      <div class="section-title" style="margin-top:16px">Market Regime</div>
+      <div class="regime-card" id="regime-card">
+        <div class="regime-name" id="regime-name">Detecting...</div>
+        <div class="regime-weights">
+          <div class="regime-weight"><span class="weight-label">OBV</span><span class="weight-value" id="weight-obv">--</span></div>
+          <div class="regime-weight"><span class="weight-label">Volume</span><span class="weight-value" id="weight-volume">--</span></div>
+        </div>
+        <div class="regime-reasoning" id="regime-reasoning">Analyzing BTC to determine market conditions...</div>
+      </div>
+      <div class="section-title" style="margin-top:16px">BTC Context</div>
+      <div class="btc-context">
+        <div class="context-row"><span>Trend (1h)</span><span id="ctx-trend-1h">--</span></div>
+        <div class="context-row"><span>Trend (4h)</span><span id="ctx-trend-4h">--</span></div>
+        <div class="context-row"><span>OBV Flow</span><span id="ctx-obv">--</span></div>
+        <div class="context-row"><span>ATR %</span><span id="ctx-atr">--</span></div>
+        <div class="context-row"><span>Vol Ratio</span><span id="ctx-vol">--</span></div>
+      </div>
       <div class="section-title" style="margin-top:16px">Grades</div>
       <div class="legend">
         <div class="legend-item"><div class="grade-dot grade-a"></div>A: 80+</div>
         <div class="legend-item"><div class="grade-dot grade-b"></div>B: 70-79</div>
         <div class="legend-item"><div class="grade-dot grade-c"></div>C: 60-69</div>
         <div class="legend-item"><div class="grade-dot grade-d"></div>D/F: <60</div>
+      </div>
+      <div class="section-title" style="margin-top:16px">Scoring Logic</div>
+      <div class="scoring-info">
+        <p>Score = OBV + Volume only</p>
+        <p>RSI & Funding = Warning flags</p>
+        <p>Weights adjust dynamically based on BTC market regime</p>
       </div>
     </aside>
     <section class="content">
@@ -325,7 +425,13 @@
           </div>
         </div>
         <div class="table-controls">
-          <div class="search-box"><span>🔍</span><input type="text" id="search-input" placeholder="Search..." oninput="applyFilters()"></div>
+          <div style="display:flex;gap:10px;align-items:center">
+            <div class="search-box"><span>🔍</span><input type="text" id="search-input" placeholder="Search..." oninput="applyFilters()"></div>
+            <div class="alert-toggle" id="alert-toggle" onclick="openAlertModal()">
+              <span>🔔</span>
+              <span>Alerts</span>
+            </div>
+          </div>
           <div class="filter-tabs">
             <button class="filter-tab active" onclick="setFilter('all',this)">All</button>
             <button class="filter-tab" onclick="setFilter('high',this)">High Score</button>
@@ -378,12 +484,12 @@ async function fetchData(){
   try{
     const d=await(await fetch("/api/scan")).json();
     allCoins=d.results||[];userCoins=d.user_coins||[];btcData=allCoins.find(c=>c.display_name==="BTC");
-    if(d.weights){
-      document.getElementById("weight-volume").value=d.weights.volume;
-      document.getElementById("weight-obv").value=d.weights.obv;
-      document.getElementById("weight-funding").value=d.weights.funding;
-      document.getElementById("weight-rsi").value=d.weights.rsi;
+
+    // Update regime display
+    if(d.regime){
+      updateRegimeDisplay(d.regime);
     }
+
     document.getElementById("scan-count").textContent=d.scan_count||0;
     document.getElementById("last-scan").textContent=d.last_scan?new Date(d.last_scan).toLocaleTimeString():"--:--";
     document.getElementById("coins-count").textContent=allCoins.length;
@@ -392,6 +498,38 @@ async function fetchData(){
     updateBTC();
     if(!detailState.symbol)applyFilters();
   }catch(e){console.error(e)}
+}
+
+function updateRegimeDisplay(regime){
+  // Update regime card
+  const card=document.getElementById("regime-card");
+  const trend=regime.trend||'neutral';
+  card.className="regime-card "+(trend.includes('up')?'bullish':trend.includes('down')?'bearish':'neutral');
+
+  document.getElementById("regime-name").textContent=regime.regime_name||'Unknown';
+  document.getElementById("weight-obv").textContent=(regime.weights?.obv||50)+"%";
+  document.getElementById("weight-volume").textContent=(regime.weights?.volume||50)+"%";
+  document.getElementById("regime-reasoning").textContent=regime.reasoning||'Analyzing...';
+
+  // Update BTC context
+  const t1=regime.btc_trend_1h||'--';
+  const t4=regime.btc_trend_4h||'--';
+  const obv=regime.btc_obv||'--';
+
+  const t1El=document.getElementById("ctx-trend-1h");
+  t1El.textContent=t1.toUpperCase();
+  t1El.className=t1==='uptrend'?'bullish':t1==='downtrend'?'bearish':'';
+
+  const t4El=document.getElementById("ctx-trend-4h");
+  t4El.textContent=t4.toUpperCase();
+  t4El.className=t4==='uptrend'?'bullish':t4==='downtrend'?'bearish':'';
+
+  const obvEl=document.getElementById("ctx-obv");
+  obvEl.textContent=obv.toUpperCase();
+  obvEl.className=obv==='bullish'?'bullish':obv==='bearish'?'bearish':'';
+
+  document.getElementById("ctx-atr").textContent=(regime.btc_atr_pct||'--')+'%';
+  document.getElementById("ctx-vol").textContent=regime.btc_vol_ratio||'--';
 }
 
 function updateBTC(){
@@ -429,11 +567,6 @@ function updateBTC(){
   }
 }
 
-async function updateWeights(){
-  const w={volume:+document.getElementById("weight-volume").value||20,obv:+document.getElementById("weight-obv").value||35,funding:+document.getElementById("weight-funding").value||20,rsi:+document.getElementById("weight-rsi").value||25};
-  await fetch("/api/weights",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(w)});
-  triggerScan();
-}
 
 async function triggerScan(){document.getElementById("status-text").textContent="Scanning...";await fetch("/api/scan/trigger",{method:"POST"})}
 
@@ -667,14 +800,36 @@ function renderDetailView(coin){
             </div>
           `).join('')}
         </div>
+        <div class="weights-used">
+          Weights: OBV ${coin.score.weights_used?.obv||50}% · Volume ${coin.score.weights_used?.volume||50}%
+          ${coin.score.confidence_modifier&&coin.score.confidence_modifier!==1?` · Structure: ${coin.score.confidence_modifier>1?'+':''}${Math.round((coin.score.confidence_modifier-1)*100)}%`:''}
+        </div>
+        ${coin.score.structure_status&&coin.score.structure_status!=='neutral'?`
+        <div class="structure-status ${coin.score.structure_status}">
+          Structure ${coin.score.structure_status==='confirms'?'✓ confirms':coin.score.structure_status==='conflicts'?'⚠ conflicts with':coin.score.structure_status==='breakout'?'⚡ BREAKOUT':'⚡ BREAKDOWN'} signal
+        </div>
+        `:''}
+        ${coin.score.warnings&&coin.score.warnings.length>0?`
+        <div class="warnings-section">
+          <div class="warnings-title">Warning Flags</div>
+          <div class="warnings-list">
+            ${coin.score.warnings.map(w=>`
+              <div class="warning-item ${w.sentiment} ${w.level}">
+                <span class="warning-type">${w.type.toUpperCase()}</span>
+                <span class="warning-msg">${w.message}</span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+        `:''}
       </div>
     </div>
 
     <div class="indicator-grid">
       <div class="indicator-card">
-        <div class="indicator-label">RSI (14)</div>
-        <div class="indicator-value ${i.rsi<30?'positive':i.rsi>70?'negative':''}">${i.rsi?.toFixed(1)||'--'}</div>
-        <div class="indicator-sub">${i.rsi<30?'Oversold':i.rsi>70?'Overbought':'Neutral'}</div>
+        <div class="indicator-label">Market Structure</div>
+        <div class="indicator-value ${coin.structure?.structure==='bullish'?'positive':coin.structure?.structure==='bearish'?'negative':''}">${(coin.structure?.structure||'--').toUpperCase()}</div>
+        <div class="indicator-sub">${coin.structure?.structure_break?'⚡ '+coin.structure.structure_break.replace('_',' ').toUpperCase():(coin.structure?.confidence||'--')+' confidence'}</div>
       </div>
       <div class="indicator-card">
         <div class="indicator-label">OBV Trend</div>
@@ -682,14 +837,14 @@ function renderDetailView(coin){
         <div class="indicator-sub">${i.obv_strength||'--'} · ${i.obv_change>0?'+':''}${i.obv_change?.toFixed(1)||0}%</div>
       </div>
       <div class="indicator-card">
+        <div class="indicator-label">RSI (14)</div>
+        <div class="indicator-value ${i.rsi<30?'positive':i.rsi>70?'negative':''}">${i.rsi?.toFixed(1)||'--'}</div>
+        <div class="indicator-sub">${i.rsi<30?'Oversold':i.rsi>70?'Overbought':'Neutral'}</div>
+      </div>
+      <div class="indicator-card">
         <div class="indicator-label">Funding Rate</div>
         <div class="indicator-value ${coin.funding_rate>0.01?'negative':coin.funding_rate<-0.01?'positive':''}">${coin.funding_rate.toFixed(4)}%</div>
         <div class="indicator-sub">${coin.funding_rate>0.01?'Longs Paying':coin.funding_rate<-0.01?'Shorts Paying':'Neutral'}</div>
-      </div>
-      <div class="indicator-card">
-        <div class="indicator-label">Trend (1h/4h)</div>
-        <div class="indicator-value ${i.trend==='uptrend'?'positive':i.trend==='downtrend'?'negative':''}">${(i.trend||'--').toUpperCase()}</div>
-        <div class="indicator-sub">4h: ${(i4.trend||'--').toUpperCase()}</div>
       </div>
     </div>
 
@@ -896,6 +1051,207 @@ document.addEventListener("keydown",e=>{
   }
 });
 document.querySelectorAll(".modal").forEach(m=>m.addEventListener("click",e=>{if(e.target.classList.contains("modal"))closeAddCoinModal()}));
+
+// === ALERT SYSTEM ===
+let alertSettings = null;
+let linkCode = null;
+
+async function loadAlertSettings(){
+  try {
+    const res = await fetch('/api/alerts/settings');
+    alertSettings = await res.json();
+    updateAlertToggle();
+  } catch(e) { console.error('Failed to load alert settings:', e); }
+}
+
+function updateAlertToggle(){
+  const toggle = document.getElementById('alert-toggle');
+  if(alertSettings && alertSettings.telegram_chat_id && alertSettings.alerts_enabled){
+    toggle.classList.add('active');
+  } else {
+    toggle.classList.remove('active');
+  }
+}
+
+async function openAlertModal(){
+  await loadAlertSettings();
+  renderAlertModal();
+  document.getElementById('alert-modal').classList.add('show');
+}
+
+function closeAlertModal(){
+  document.getElementById('alert-modal').classList.remove('show');
+}
+
+function renderAlertModal(){
+  const modal = document.getElementById('alert-modal-body');
+  const isLinked = alertSettings && alertSettings.telegram_chat_id;
+
+  if(isLinked){
+    modal.innerHTML = `
+      <div class="alert-section">
+        <div class="alert-section-title">Telegram Status</div>
+        <div class="link-status linked">
+          <div style="font-size:24px;margin-bottom:8px">✅</div>
+          <div style="font-weight:600;margin-bottom:4px">Connected</div>
+          <div style="font-size:11px;color:var(--text-secondary)">Alerts will be sent to your Telegram</div>
+        </div>
+        <button class="alert-btn secondary" onclick="testAlert()" style="margin-top:12px">Send Test Alert</button>
+        <button class="alert-btn danger" onclick="unlinkTelegram()" style="margin-top:8px">Disconnect Telegram</button>
+      </div>
+
+      <div class="alert-section">
+        <div class="alert-section-title">Alert Types</div>
+        <div class="alert-option">
+          <div class="alert-option-info">
+            <div class="alert-option-title">Structure Breaks</div>
+            <div class="alert-option-desc">When price breaks key structure levels</div>
+          </div>
+          <div class="toggle-switch ${alertSettings.alert_structure_break?'active':''}" onclick="toggleAlertOption('alert_structure_break',this)"></div>
+        </div>
+        <div class="alert-option">
+          <div class="alert-option-info">
+            <div class="alert-option-title">OBV Divergences</div>
+            <div class="alert-option-desc">When OBV diverges from price action</div>
+          </div>
+          <div class="toggle-switch ${alertSettings.alert_divergence?'active':''}" onclick="toggleAlertOption('alert_divergence',this)"></div>
+        </div>
+        <div class="alert-option">
+          <div class="alert-option-info">
+            <div class="alert-option-title">High Confidence Signals</div>
+            <div class="alert-option-desc">Strong momentum with confluence</div>
+          </div>
+          <div class="toggle-switch ${alertSettings.alert_high_confidence?'active':''}" onclick="toggleAlertOption('alert_high_confidence',this)"></div>
+        </div>
+        <div class="alert-option">
+          <div class="alert-option-info">
+            <div class="alert-option-title">RSI Extremes</div>
+            <div class="alert-option-desc">When RSI is extremely overbought/oversold</div>
+          </div>
+          <div class="toggle-switch ${alertSettings.alert_rsi_extreme?'active':''}" onclick="toggleAlertOption('alert_rsi_extreme',this)"></div>
+        </div>
+      </div>
+
+      <div class="alert-section">
+        <div class="alert-section-title">Master Switch</div>
+        <div class="alert-option">
+          <div class="alert-option-info">
+            <div class="alert-option-title">Alerts Enabled</div>
+            <div class="alert-option-desc">Turn all alerts on or off</div>
+          </div>
+          <div class="toggle-switch ${alertSettings.alerts_enabled?'active':''}" onclick="toggleAlertOption('alerts_enabled',this)"></div>
+        </div>
+      </div>
+    `;
+  } else {
+    modal.innerHTML = `
+      <div class="alert-section">
+        <div class="alert-section-title">Connect Telegram</div>
+        <div class="link-status unlinked">
+          <div style="font-size:24px;margin-bottom:8px">📱</div>
+          <div style="font-weight:600;margin-bottom:8px">Link Your Telegram</div>
+          <div class="link-instructions">
+            <ol>
+              <li>Open Telegram and search for <code>@YourCryptoSignalsBot</code></li>
+              <li>Start a chat with the bot</li>
+              <li>Click the button below to get your code</li>
+              <li>Send the code to the bot</li>
+            </ol>
+          </div>
+        </div>
+        <button class="alert-btn primary" onclick="generateLinkCode()" id="get-code-btn">Get Link Code</button>
+        <div id="link-code-display" style="display:none;margin-top:16px;text-align:center">
+          <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px">Send this code to the bot:</div>
+          <div class="link-code" id="link-code-value"></div>
+          <div style="font-size:11px;color:var(--text-secondary)">Code expires in 30 minutes</div>
+        </div>
+      </div>
+    `;
+  }
+}
+
+async function generateLinkCode(){
+  const btn = document.getElementById('get-code-btn');
+  btn.disabled = true;
+  btn.textContent = 'Generating...';
+
+  try {
+    const res = await fetch('/api/alerts/link', {method:'POST'});
+    const data = await res.json();
+    linkCode = data.code;
+
+    document.getElementById('link-code-value').textContent = linkCode;
+    document.getElementById('link-code-display').style.display = 'block';
+    btn.textContent = 'Code Generated';
+  } catch(e) {
+    btn.disabled = false;
+    btn.textContent = 'Get Link Code';
+    alert('Failed to generate code');
+  }
+}
+
+async function toggleAlertOption(option, el){
+  const newValue = !el.classList.contains('active');
+  el.classList.toggle('active');
+
+  try {
+    await fetch('/api/alerts/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({[option]: newValue ? 1 : 0})
+    });
+    alertSettings[option] = newValue ? 1 : 0;
+    updateAlertToggle();
+  } catch(e) {
+    el.classList.toggle('active'); // Revert
+    alert('Failed to update setting');
+  }
+}
+
+async function testAlert(){
+  try {
+    const res = await fetch('/api/alerts/test', {method:'POST'});
+    const data = await res.json();
+    if(data.status === 'sent'){
+      alert('Test alert sent! Check your Telegram.');
+    } else {
+      alert('Failed to send test alert.');
+    }
+  } catch(e) { alert('Failed to send test alert.'); }
+}
+
+async function unlinkTelegram(){
+  if(!confirm('Are you sure you want to disconnect Telegram?')) return;
+
+  try {
+    await fetch('/api/alerts/unlink', {method:'POST'});
+    alertSettings.telegram_chat_id = null;
+    alertSettings.alerts_enabled = 0;
+    renderAlertModal();
+    updateAlertToggle();
+  } catch(e) { alert('Failed to unlink Telegram.'); }
+}
+
+// Load alert settings on page load
+loadAlertSettings();
+
+// Close alert modal on backdrop click
+document.getElementById('alert-modal').addEventListener('click', e => {
+  if(e.target.id === 'alert-modal') closeAlertModal();
+});
 </script>
+
+<!-- Alert Modal -->
+<div class="alert-modal" id="alert-modal">
+  <div class="alert-modal-content">
+    <div class="alert-modal-header">
+      <h3>🔔 Alert Settings</h3>
+      <button class="alert-modal-close" onclick="closeAlertModal()">&times;</button>
+    </div>
+    <div class="alert-modal-body" id="alert-modal-body">
+      Loading...
+    </div>
+  </div>
+</div>
 </body>
 </html>

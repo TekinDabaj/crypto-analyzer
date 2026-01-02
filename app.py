@@ -42,6 +42,7 @@ GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID', '')
 GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET', '')
 GOOGLE_REDIRECT_URI = os.getenv('GOOGLE_REDIRECT_URI', 'https://tekoworld.com/auth/callback')
 SESSION_SECRET = os.getenv('SESSION_SECRET', secrets.token_hex(32))
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8559548060:AAGkwY9Ln6G1uuDMGNcDSjUGzYDIrcp16nU')
 
 ALL_COINS = [
     'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT',
@@ -93,6 +94,16 @@ class HistoricalTracker:
             conn.execute("""CREATE TABLE IF NOT EXISTS user_coins (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, symbol TEXT NOT NULL,
                 added_at TEXT NOT NULL, UNIQUE(user_id, symbol), FOREIGN KEY (user_id) REFERENCES users(id))""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS user_alerts (
+                user_id INTEGER PRIMARY KEY, telegram_chat_id TEXT, alerts_enabled INTEGER DEFAULT 0,
+                link_code TEXT, link_code_expires TEXT,
+                alert_structure_break INTEGER DEFAULT 1, alert_divergence INTEGER DEFAULT 1,
+                alert_high_confidence INTEGER DEFAULT 1, alert_rsi_extreme INTEGER DEFAULT 0,
+                last_alert_time TEXT, FOREIGN KEY (user_id) REFERENCES users(id))""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS sent_alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, symbol TEXT NOT NULL,
+                alert_type TEXT NOT NULL, sent_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id))""")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_symbol_date ON coin_snapshots(symbol, date DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_summaries_symbol_date ON daily_summaries(symbol, date DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_user_coins_user ON user_coins(user_id)")
@@ -121,6 +132,11 @@ class HistoricalTracker:
     def get_user_coins(self, user_id: int) -> List[str]:
         with self.get_connection() as conn:
             return [r['symbol'] for r in conn.execute("SELECT symbol FROM user_coins WHERE user_id = ? ORDER BY added_at", (user_id,)).fetchall()]
+
+    def get_user_by_id(self, user_id: int) -> Optional[Dict]:
+        with self.get_connection() as conn:
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            return dict(row) if row else None
 
     def add_user_coin(self, user_id: int, symbol: str) -> bool:
         symbol = symbol.upper() if '/' in symbol else symbol.upper() + '/USDT'
@@ -188,28 +204,385 @@ class HistoricalTracker:
             r = conn.execute("DELETE FROM coin_snapshots WHERE date < ?", ((datetime.utcnow() - timedelta(days=keep_days)).strftime('%Y-%m-%d'),))
             if r.rowcount > 0: logger.info(f"Cleaned {r.rowcount} old snapshots"); conn.execute("VACUUM")
 
+    # === ALERT MANAGEMENT ===
+
+    def get_user_alert_settings(self, user_id: int) -> Optional[Dict]:
+        with self.get_connection() as conn:
+            row = conn.execute("SELECT * FROM user_alerts WHERE user_id = ?", (user_id,)).fetchone()
+            return dict(row) if row else None
+
+    def create_or_update_alert_settings(self, user_id: int, **kwargs) -> Dict:
+        with self.get_connection() as conn:
+            existing = conn.execute("SELECT user_id FROM user_alerts WHERE user_id = ?", (user_id,)).fetchone()
+            if existing:
+                updates = ', '.join(f"{k} = ?" for k in kwargs.keys())
+                conn.execute(f"UPDATE user_alerts SET {updates} WHERE user_id = ?", (*kwargs.values(), user_id))
+            else:
+                cols = ['user_id'] + list(kwargs.keys())
+                placeholders = ', '.join(['?'] * len(cols))
+                conn.execute(f"INSERT INTO user_alerts ({', '.join(cols)}) VALUES ({placeholders})", (user_id, *kwargs.values()))
+            return self.get_user_alert_settings(user_id)
+
+    def generate_link_code(self, user_id: int) -> str:
+        code = secrets.token_hex(4).upper()  # 8 character code
+        expires = (datetime.utcnow() + timedelta(minutes=30)).isoformat()
+        self.create_or_update_alert_settings(user_id, link_code=code, link_code_expires=expires)
+        return code
+
+    def verify_link_code(self, code: str, telegram_chat_id: str) -> Optional[int]:
+        """Verify link code and return user_id if valid"""
+        with self.get_connection() as conn:
+            row = conn.execute(
+                "SELECT user_id, link_code_expires FROM user_alerts WHERE link_code = ?", (code.upper(),)
+            ).fetchone()
+            if not row:
+                return None
+            if row['link_code_expires'] and datetime.fromisoformat(row['link_code_expires']) < datetime.utcnow():
+                return None  # Expired
+            # Link successful - update the record
+            conn.execute(
+                "UPDATE user_alerts SET telegram_chat_id = ?, link_code = NULL, link_code_expires = NULL, alerts_enabled = 1 WHERE user_id = ?",
+                (telegram_chat_id, row['user_id'])
+            )
+            return row['user_id']
+
+    def unlink_telegram(self, user_id: int):
+        with self.get_connection() as conn:
+            conn.execute(
+                "UPDATE user_alerts SET telegram_chat_id = NULL, alerts_enabled = 0 WHERE user_id = ?",
+                (user_id,)
+            )
+
+    def get_users_for_alerts(self) -> List[Dict]:
+        """Get all users with alerts enabled and telegram linked"""
+        with self.get_connection() as conn:
+            rows = conn.execute("""
+                SELECT ua.*, u.email, u.name FROM user_alerts ua
+                JOIN users u ON ua.user_id = u.id
+                WHERE ua.alerts_enabled = 1 AND ua.telegram_chat_id IS NOT NULL
+            """).fetchall()
+            return [dict(r) for r in rows]
+
+    def was_alert_sent_recently(self, user_id: int, symbol: str, alert_type: str, hours: int = 1) -> bool:
+        """Check if same alert was sent recently to prevent spam"""
+        with self.get_connection() as conn:
+            cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+            row = conn.execute(
+                "SELECT id FROM sent_alerts WHERE user_id = ? AND symbol = ? AND alert_type = ? AND sent_at > ?",
+                (user_id, symbol, alert_type, cutoff)
+            ).fetchone()
+            return row is not None
+
+    def log_sent_alert(self, user_id: int, symbol: str, alert_type: str):
+        with self.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO sent_alerts (user_id, symbol, alert_type, sent_at) VALUES (?, ?, ?, ?)",
+                (user_id, symbol, alert_type, datetime.utcnow().isoformat())
+            )
+            # Cleanup old alert logs (older than 7 days)
+            cutoff = (datetime.utcnow() - timedelta(days=7)).isoformat()
+            conn.execute("DELETE FROM sent_alerts WHERE sent_at < ?", (cutoff,))
+
+
+class TelegramBot:
+    """Handles Telegram bot for sending alerts and receiving link codes"""
+
+    def __init__(self, token: str, tracker: HistoricalTracker):
+        self.token = token
+        self.tracker = tracker
+        self.api_url = f"https://api.telegram.org/bot{token}"
+        self.last_update_id = 0
+        self.running = False
+        logger.info("Telegram bot initialized")
+
+    async def send_message(self, chat_id: str, text: str, parse_mode: str = "HTML") -> bool:
+        """Send a message to a Telegram chat"""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/sendMessage",
+                    json={"chat_id": chat_id, "text": text, "parse_mode": parse_mode},
+                    timeout=10.0
+                )
+                return response.status_code == 200
+        except Exception as e:
+            logger.error(f"Telegram send error: {e}")
+            return False
+
+    async def get_updates(self) -> List[Dict]:
+        """Get new messages from Telegram"""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.api_url}/getUpdates",
+                    params={"offset": self.last_update_id + 1, "timeout": 5},
+                    timeout=15.0
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    return data.get("result", [])
+        except Exception as e:
+            logger.debug(f"Telegram poll error: {e}")
+        return []
+
+    async def process_updates(self):
+        """Process incoming messages for link codes"""
+        updates = await self.get_updates()
+        for update in updates:
+            self.last_update_id = update["update_id"]
+            message = update.get("message", {})
+            text = message.get("text", "").strip()
+            chat_id = str(message.get("chat", {}).get("id", ""))
+            user_name = message.get("from", {}).get("first_name", "User")
+
+            if not text or not chat_id:
+                continue
+
+            # Handle /start command
+            if text.lower() == "/start":
+                await self.send_message(
+                    chat_id,
+                    "👋 <b>Welcome to Crypto Signal Alerts!</b>\n\n"
+                    "To link your account, go to the web dashboard and click the 🔔 alerts button. "
+                    "Then send me the 8-character code shown there.\n\n"
+                    "Example: <code>A1B2C3D4</code>"
+                )
+                continue
+
+            # Handle /help command
+            if text.lower() == "/help":
+                await self.send_message(
+                    chat_id,
+                    "📖 <b>Commands:</b>\n"
+                    "/start - Welcome message\n"
+                    "/status - Check your link status\n"
+                    "/stop - Disable alerts\n\n"
+                    "To link: Send your 8-character code from the web dashboard."
+                )
+                continue
+
+            # Handle /status command
+            if text.lower() == "/status":
+                # Check if this chat_id is linked
+                users = self.tracker.get_users_for_alerts()
+                linked_user = next((u for u in users if u['telegram_chat_id'] == chat_id), None)
+                if linked_user:
+                    await self.send_message(
+                        chat_id,
+                        f"✅ <b>Linked!</b>\n\n"
+                        f"Account: {linked_user.get('email', 'Unknown')}\n"
+                        f"Alerts: {'Enabled' if linked_user['alerts_enabled'] else 'Disabled'}"
+                    )
+                else:
+                    await self.send_message(chat_id, "❌ Not linked. Send your code from the web dashboard.")
+                continue
+
+            # Handle /stop command
+            if text.lower() == "/stop":
+                # Find and unlink
+                users = self.tracker.get_users_for_alerts()
+                linked_user = next((u for u in users if u['telegram_chat_id'] == chat_id), None)
+                if linked_user:
+                    self.tracker.unlink_telegram(linked_user['user_id'])
+                    await self.send_message(chat_id, "🔕 Alerts disabled. You can re-link anytime from the dashboard.")
+                else:
+                    await self.send_message(chat_id, "You're not currently linked.")
+                continue
+
+            # Try to verify as link code (8 hex characters)
+            if len(text) == 8 and all(c in '0123456789ABCDEF' for c in text.upper()):
+                user_id = self.tracker.verify_link_code(text, chat_id)
+                if user_id:
+                    user = self.tracker.get_user_by_id(user_id)
+                    await self.send_message(
+                        chat_id,
+                        f"✅ <b>Successfully linked!</b>\n\n"
+                        f"Account: {user.get('email', 'Unknown')}\n"
+                        f"You'll now receive alerts for your watchlist.\n\n"
+                        f"<i>Use /stop to disable alerts</i>"
+                    )
+                    logger.info(f"Telegram linked: user {user_id} -> chat {chat_id}")
+                else:
+                    await self.send_message(
+                        chat_id,
+                        "❌ Invalid or expired code. Please get a new code from the dashboard."
+                    )
+                continue
+
+            # Unknown message
+            await self.send_message(
+                chat_id,
+                "🤔 I didn't understand that. Send /help for commands, or paste your 8-character link code."
+            )
+
+    async def poll_loop(self):
+        """Background loop to process incoming messages"""
+        while self.running:
+            try:
+                await self.process_updates()
+            except Exception as e:
+                logger.error(f"Telegram poll loop error: {e}")
+            await asyncio.sleep(2)  # Poll every 2 seconds
+
+    def format_alert(self, coin: Dict, alert_type: str, details: str) -> str:
+        """Format an alert message for Telegram"""
+        symbol = coin['display_name']
+        price = coin['price']
+        change = coin['price_change_24h']
+        change_emoji = "📈" if change >= 0 else "📉"
+
+        emoji_map = {
+            'structure_break': '⚡',
+            'divergence': '🔄',
+            'high_confidence': '🎯',
+            'rsi_extreme': '⚠️'
+        }
+        emoji = emoji_map.get(alert_type, '🔔')
+
+        return (
+            f"{emoji} <b>{symbol}</b> Alert\n\n"
+            f"💰 ${price:,.4f} ({'+' if change >= 0 else ''}{change:.2f}%) {change_emoji}\n\n"
+            f"<b>{details}</b>\n\n"
+            f"<i>Crypto Signal Bot</i>"
+        )
+
 
 class MarketAnalyzer:
     def __init__(self):
         self.exchange = self._init_exchange()
         self.spot_exchange = self._init_spot_exchange()
         self.coins = ALL_COINS.copy()
-        self.weights = {'volume': 20, 'obv': 35, 'funding': 20, 'rsi': 25}
-        self._normalize_weights()
         self.obv_lookback = 14
         self.rsi_period = 14
         self.cache = {}
         self.cache_duration = 60
+        # Dynamic scoring system
+        self.market_regime = {
+            'trend': 'neutral',      # trending_up, trending_down, ranging
+            'volatility': 'normal',  # high, normal, low
+            'regime_name': 'Neutral Market',
+            'weights': {'obv': 50, 'volume': 50},
+            'reasoning': 'Initializing...'
+        }
         logger.info(f"Analyzer initialized with {len(self.coins)} coins")
 
-    def _normalize_weights(self):
-        total = sum(self.weights.values())
-        if total != 100: self.weights = {k: round(v * 100 / total, 1) for k, v in self.weights.items()}
+    def detect_market_regime(self, btc_data: Optional[Dict]) -> Dict:
+        """
+        Detect market regime using BTC as the market leader.
+        Returns regime info with dynamic weights optimized for OBV/Volume signals.
+        """
+        if not btc_data or '1h' not in btc_data.get('indicators', {}):
+            return self.market_regime  # Return current if no data
 
-    def update_weights(self, new_weights: Dict[str, float]):
-        for k in ['volume', 'obv', 'funding', 'rsi']:
-            if k in new_weights: self.weights[k] = new_weights[k]
-        self._normalize_weights()
+        i1 = btc_data['indicators']['1h']
+        i4 = btc_data['indicators'].get('4h', {})
+
+        # === TREND DETECTION ===
+        trend_1h = i1.get('trend', 'sideways')
+        trend_4h = i4.get('trend', 'sideways') if i4 else 'sideways'
+        obv_trend = i1.get('obv_trend', 'neutral')
+        obv_strength = i1.get('obv_strength', 'weak')
+        price_change = abs(i1.get('price_change_24h', 0))
+
+        # Trend score: how directional is the market?
+        trend_score = 0
+        if trend_1h == trend_4h and trend_1h != 'sideways':
+            trend_score += 3  # Strong alignment
+        elif trend_1h != 'sideways' or trend_4h != 'sideways':
+            trend_score += 1  # Partial trend
+        if obv_trend != 'neutral':
+            trend_score += 2 if obv_strength == 'strong' else 1
+        if price_change > 5:
+            trend_score += 2
+        elif price_change > 2:
+            trend_score += 1
+
+        # Classify trend
+        if trend_score >= 5:
+            if trend_1h == 'uptrend' or trend_4h == 'uptrend':
+                trend = 'trending_up'
+            elif trend_1h == 'downtrend' or trend_4h == 'downtrend':
+                trend = 'trending_down'
+            else:
+                trend = 'trending_up' if obv_trend == 'bullish' else 'trending_down' if obv_trend == 'bearish' else 'ranging'
+        elif trend_score >= 2:
+            trend = 'weak_trend'
+        else:
+            trend = 'ranging'
+
+        # === VOLATILITY DETECTION ===
+        atr_pct = i1.get('atr_percent', 2.0)
+        vol_ratio = i1.get('volume_ratio', 1.0)
+
+        # Volatility classification
+        if atr_pct > 4.0 or vol_ratio > 1.8:
+            volatility = 'high'
+        elif atr_pct < 1.5 and vol_ratio < 0.7:
+            volatility = 'low'
+        else:
+            volatility = 'normal'
+
+        # === DYNAMIC WEIGHT CALCULATION ===
+        # Base: OBV and Volume only (as user requested)
+        # Adjust based on regime for optimal signal quality
+
+        if trend in ['trending_up', 'trending_down']:
+            if volatility == 'high':
+                # Strong trend + high vol: Volume confirms moves, OBV shows smart money
+                weights = {'obv': 55, 'volume': 45}
+                reasoning = "Strong trend with high activity. OBV prioritized to track smart money flow, volume confirms momentum."
+            elif volatility == 'low':
+                # Trend but quiet: OBV more reliable than choppy volume
+                weights = {'obv': 65, 'volume': 35}
+                reasoning = "Trending on low volatility. OBV weighted higher as volume signals are less reliable in quiet markets."
+            else:
+                weights = {'obv': 60, 'volume': 40}
+                reasoning = "Clear trend detected. OBV leads for accumulation/distribution, volume confirms."
+        elif trend == 'weak_trend':
+            if volatility == 'high':
+                # Choppy but active: Volume spikes matter
+                weights = {'obv': 50, 'volume': 50}
+                reasoning = "Weak trend with high volatility. Equal weight - watching for volume confirmation of direction."
+            else:
+                weights = {'obv': 55, 'volume': 45}
+                reasoning = "Developing trend. OBV slightly favored to detect early accumulation/distribution."
+        else:  # ranging
+            if volatility == 'high':
+                # Ranging but volatile: Big volume = potential breakout
+                weights = {'obv': 45, 'volume': 55}
+                reasoning = "Ranging with high volatility. Volume weighted higher to catch breakout signals."
+            elif volatility == 'low':
+                # Quiet range: OBV can show stealth accumulation
+                weights = {'obv': 60, 'volume': 40}
+                reasoning = "Quiet consolidation. OBV prioritized to detect hidden accumulation before breakout."
+            else:
+                weights = {'obv': 50, 'volume': 50}
+                reasoning = "Ranging market. Balanced weights - waiting for directional signal."
+
+        # === REGIME NAME ===
+        trend_names = {
+            'trending_up': 'Bullish Trend',
+            'trending_down': 'Bearish Trend',
+            'weak_trend': 'Developing Trend',
+            'ranging': 'Consolidation'
+        }
+        vol_names = {'high': 'High Volatility', 'normal': 'Normal Volatility', 'low': 'Low Volatility'}
+        regime_name = f"{trend_names.get(trend, 'Neutral')} · {vol_names.get(volatility, 'Normal')}"
+
+        self.market_regime = {
+            'trend': trend,
+            'volatility': volatility,
+            'regime_name': regime_name,
+            'weights': weights,
+            'reasoning': reasoning,
+            'btc_trend_1h': trend_1h,
+            'btc_trend_4h': trend_4h,
+            'btc_obv': obv_trend,
+            'btc_atr_pct': round(atr_pct, 2),
+            'btc_vol_ratio': round(vol_ratio, 2)
+        }
+
+        return self.market_regime
 
     def _init_exchange(self) -> ccxt.Exchange:
         ex = ccxt.binance({'apiKey': os.getenv('BINANCE_API_KEY', ''), 'secret': os.getenv('BINANCE_SECRET_KEY', ''),
@@ -302,6 +675,113 @@ class MarketAnalyzer:
         except Exception as e:
             logger.error(f"Indicator error: {e}")
             return {}
+
+    def detect_market_structure(self, df: pd.DataFrame) -> Dict:
+        """
+        Detect market structure: Higher Highs/Higher Lows (bullish) or Lower Highs/Lower Lows (bearish).
+        Also detects structure breaks which signal potential trend changes.
+        """
+        if df.empty or len(df) < 30:
+            return {'structure': 'unknown', 'confidence': 'low', 'details': {}}
+
+        try:
+            high = df['high'].values
+            low = df['low'].values
+            close = df['close'].values
+
+            # Find swing highs and swing lows (using 5-candle lookback)
+            swing_highs = []
+            swing_lows = []
+            lookback = 5
+
+            for i in range(lookback, len(df) - lookback):
+                # Swing High: highest point in window
+                if high[i] == max(high[i-lookback:i+lookback+1]):
+                    swing_highs.append({'price': float(high[i]), 'index': i})
+                # Swing Low: lowest point in window
+                if low[i] == min(low[i-lookback:i+lookback+1]):
+                    swing_lows.append({'price': float(low[i]), 'index': i})
+
+            # Need at least 2 swing highs and 2 swing lows for structure
+            if len(swing_highs) < 2 or len(swing_lows) < 2:
+                return {'structure': 'unclear', 'confidence': 'low', 'details': {}}
+
+            # Get the last 3-4 swings for recent structure
+            recent_highs = swing_highs[-4:] if len(swing_highs) >= 4 else swing_highs[-2:]
+            recent_lows = swing_lows[-4:] if len(swing_lows) >= 4 else swing_lows[-2:]
+
+            # Analyze highs: Higher Highs or Lower Highs?
+            hh_count = 0
+            lh_count = 0
+            for i in range(1, len(recent_highs)):
+                if recent_highs[i]['price'] > recent_highs[i-1]['price']:
+                    hh_count += 1
+                elif recent_highs[i]['price'] < recent_highs[i-1]['price']:
+                    lh_count += 1
+
+            # Analyze lows: Higher Lows or Lower Lows?
+            hl_count = 0
+            ll_count = 0
+            for i in range(1, len(recent_lows)):
+                if recent_lows[i]['price'] > recent_lows[i-1]['price']:
+                    hl_count += 1
+                elif recent_lows[i]['price'] < recent_lows[i-1]['price']:
+                    ll_count += 1
+
+            # Determine structure
+            bullish_points = hh_count + hl_count
+            bearish_points = lh_count + ll_count
+            total_points = bullish_points + bearish_points
+
+            if total_points == 0:
+                structure = 'ranging'
+                confidence = 'low'
+            elif bullish_points > bearish_points * 1.5:
+                structure = 'bullish'
+                confidence = 'high' if bullish_points >= 3 else 'medium'
+            elif bearish_points > bullish_points * 1.5:
+                structure = 'bearish'
+                confidence = 'high' if bearish_points >= 3 else 'medium'
+            else:
+                structure = 'mixed'
+                confidence = 'low'
+
+            # Detect structure break (recent)
+            # Check if most recent swing broke previous structure
+            structure_break = None
+            current_price = float(close[-1])
+
+            if len(swing_highs) >= 2 and len(swing_lows) >= 2:
+                last_swing_high = swing_highs[-1]['price']
+                prev_swing_high = swing_highs[-2]['price']
+                last_swing_low = swing_lows[-1]['price']
+                prev_swing_low = swing_lows[-2]['price']
+
+                # Bullish break: price broke above previous lower high
+                if structure == 'bearish' or structure == 'mixed':
+                    if current_price > prev_swing_high:
+                        structure_break = 'bullish_break'
+
+                # Bearish break: price broke below previous higher low
+                if structure == 'bullish' or structure == 'mixed':
+                    if current_price < prev_swing_low:
+                        structure_break = 'bearish_break'
+
+            return {
+                'structure': structure,
+                'confidence': confidence,
+                'higher_highs': hh_count,
+                'lower_highs': lh_count,
+                'higher_lows': hl_count,
+                'lower_lows': ll_count,
+                'structure_break': structure_break,
+                'last_swing_high': swing_highs[-1]['price'] if swing_highs else None,
+                'last_swing_low': swing_lows[-1]['price'] if swing_lows else None
+            }
+
+        except Exception as e:
+            logger.error(f"Structure detection error: {e}")
+            return {'structure': 'unknown', 'confidence': 'low', 'details': {}}
 
     def calculate_levels(self, df: pd.DataFrame, current_price: float) -> Dict:
         """Calculate support/resistance levels using volume profile and swing points"""
@@ -488,25 +968,148 @@ class MarketAnalyzer:
             logger.error(f"Levels calculation error: {e}")
             return {'supports': [], 'resistances': [], 'poc': None, 'dynamic_levels': [], 'atr': 0, 'atr_pct': 0}
 
-    def score_coin(self, ind: Dict, funding: float) -> Dict:
-        scores, details = {}, []
+    def score_coin(self, ind: Dict, funding: float, structure: Dict = None) -> Dict:
+        """
+        Dynamic scoring using only OBV and Volume as core metrics.
+        Market structure is a confidence modifier.
+        RSI and Funding are warning flags, not score components.
+        """
+        weights = self.market_regime['weights']
+        scores = {}
+        structure = structure or {}
+
+        # === CORE SCORING: OBV (accumulation/distribution) ===
+        ot = ind.get('obv_trend', 'neutral')
+        os = ind.get('obv_strength', 'weak')
+        od = ind.get('obv_divergence', 'none')
+
+        if ot == 'bullish':
+            scores['obv'] = 95 if os == 'strong' else 75
+        elif ot == 'bearish':
+            scores['obv'] = 25 if os == 'strong' else 45
+        else:
+            scores['obv'] = 55  # Neutral
+
+        # Divergence bonus/penalty (powerful signal)
+        if od == 'bullish':
+            scores['obv'] = min(100, scores['obv'] + 20)
+        elif od == 'bearish':
+            scores['obv'] = max(0, scores['obv'] - 20)
+
+        # === CORE SCORING: Volume (market participation) ===
         vr = ind.get('volume_ratio', 1.0)
-        scores['volume'] = 100 if vr >= 1.5 else 80 if vr >= 1.1 else 60 if vr >= 0.8 else 40
-        
-        ot, os, od = ind.get('obv_trend', 'neutral'), ind.get('obv_strength', 'weak'), ind.get('obv_divergence', 'none')
-        scores['obv'] = 100 if ot == 'bullish' and os == 'strong' else 80 if ot == 'bullish' else 20 if ot == 'bearish' and os == 'strong' else 40 if ot == 'bearish' else 60
-        if od == 'bullish': scores['obv'] = min(100, scores['obv'] + 15)
-        elif od == 'bearish': scores['obv'] = max(0, scores['obv'] - 15)
+        if vr >= 2.0:
+            scores['volume'] = 100  # Exceptional activity
+        elif vr >= 1.5:
+            scores['volume'] = 90
+        elif vr >= 1.2:
+            scores['volume'] = 80
+        elif vr >= 0.9:
+            scores['volume'] = 65
+        elif vr >= 0.7:
+            scores['volume'] = 50
+        else:
+            scores['volume'] = 35  # Very low activity
 
-        fp = funding * 100
-        scores['funding'] = 100 if -0.005 <= fp <= 0.005 else 80 if -0.01 <= fp <= 0.01 else 60 if -0.02 <= fp <= 0.02 else 20
-        
+        # === CALCULATE BASE TOTAL (dynamic weights) ===
+        base_total = (scores['obv'] * weights['obv'] / 100) + (scores['volume'] * weights['volume'] / 100)
+
+        # === STRUCTURE CONFIDENCE MODIFIER ===
+        struct_type = structure.get('structure', 'unknown')
+        struct_confidence = structure.get('confidence', 'low')
+        struct_break = structure.get('structure_break')
+
+        # Determine if structure confirms or conflicts with OBV
+        obv_bullish = ot == 'bullish'
+        obv_bearish = ot == 'bearish'
+        struct_bullish = struct_type == 'bullish'
+        struct_bearish = struct_type == 'bearish'
+
+        confidence_modifier = 1.0  # Default: no change
+        structure_status = 'neutral'
+
+        if obv_bullish and struct_bullish:
+            # Strong confirmation: Bullish OBV + Bullish structure
+            confidence_modifier = 1.08 if struct_confidence == 'high' else 1.05
+            structure_status = 'confirms'
+        elif obv_bearish and struct_bearish:
+            # Strong confirmation: Bearish OBV + Bearish structure (still high score for short bias)
+            confidence_modifier = 1.05
+            structure_status = 'confirms'
+        elif obv_bullish and struct_bearish:
+            # Conflict: Bullish OBV but bearish structure (potential early reversal)
+            confidence_modifier = 0.95
+            structure_status = 'conflicts'
+        elif obv_bearish and struct_bullish:
+            # Conflict: Bearish OBV but bullish structure (potential distribution)
+            confidence_modifier = 0.95
+            structure_status = 'conflicts'
+
+        # Structure break bonus (significant event)
+        if struct_break == 'bullish_break' and obv_bullish:
+            confidence_modifier = min(1.12, confidence_modifier + 0.05)
+            structure_status = 'breakout'
+        elif struct_break == 'bearish_break' and obv_bearish:
+            confidence_modifier = min(1.12, confidence_modifier + 0.05)
+            structure_status = 'breakdown'
+
+        # Apply modifier
+        total = min(100, base_total * confidence_modifier)
+
+        # === WARNING FLAGS ===
+        warnings = []
         rsi = ind.get('rsi', 50)
-        scores['rsi'] = 100 if 40 <= rsi <= 60 else 80 if 30 <= rsi <= 70 else 40 if 20 <= rsi <= 80 else 20
+        fp = funding * 100
 
-        total = sum(scores[k] * (self.weights[k] / 100) for k in scores)
+        # RSI warnings
+        if rsi < 25:
+            warnings.append({'type': 'rsi', 'level': 'extreme', 'message': 'Extremely oversold', 'sentiment': 'bullish'})
+        elif rsi < 30:
+            warnings.append({'type': 'rsi', 'level': 'warning', 'message': 'Oversold', 'sentiment': 'bullish'})
+        elif rsi > 75:
+            warnings.append({'type': 'rsi', 'level': 'extreme', 'message': 'Extremely overbought', 'sentiment': 'bearish'})
+        elif rsi > 70:
+            warnings.append({'type': 'rsi', 'level': 'warning', 'message': 'Overbought', 'sentiment': 'bearish'})
+
+        # Funding warnings
+        if fp > 0.08:
+            warnings.append({'type': 'funding', 'level': 'extreme', 'message': 'Extreme long crowding', 'sentiment': 'bearish'})
+        elif fp > 0.05:
+            warnings.append({'type': 'funding', 'level': 'warning', 'message': 'Longs crowded', 'sentiment': 'bearish'})
+        elif fp < -0.08:
+            warnings.append({'type': 'funding', 'level': 'extreme', 'message': 'Extreme short crowding', 'sentiment': 'bullish'})
+        elif fp < -0.05:
+            warnings.append({'type': 'funding', 'level': 'warning', 'message': 'Shorts crowded', 'sentiment': 'bullish'})
+
+        # Divergence flags
+        if od == 'bullish':
+            warnings.append({'type': 'divergence', 'level': 'signal', 'message': 'Bullish OBV divergence', 'sentiment': 'bullish'})
+        elif od == 'bearish':
+            warnings.append({'type': 'divergence', 'level': 'signal', 'message': 'Bearish OBV divergence', 'sentiment': 'bearish'})
+
+        # Structure warnings/signals
+        if structure_status == 'conflicts':
+            if obv_bullish:
+                warnings.append({'type': 'structure', 'level': 'warning', 'message': 'Structure bearish - early reversal or trap?', 'sentiment': 'caution'})
+            else:
+                warnings.append({'type': 'structure', 'level': 'warning', 'message': 'Structure bullish - distribution or reversal?', 'sentiment': 'caution'})
+        elif structure_status == 'breakout':
+            warnings.append({'type': 'structure', 'level': 'signal', 'message': 'Bullish structure break!', 'sentiment': 'bullish'})
+        elif structure_status == 'breakdown':
+            warnings.append({'type': 'structure', 'level': 'signal', 'message': 'Bearish structure break!', 'sentiment': 'bearish'})
+
         grade = 'A+' if total >= 90 else 'A' if total >= 80 else 'B' if total >= 70 else 'C' if total >= 60 else 'D' if total >= 50 else 'F'
-        return {'total_score': round(total), 'percentage': round(total, 1), 'component_scores': scores, 'grade': grade, 'weights_used': self.weights.copy()}
+
+        return {
+            'total_score': round(total),
+            'percentage': round(total, 1),
+            'component_scores': scores,
+            'grade': grade,
+            'weights_used': weights.copy(),
+            'warnings': warnings,
+            'structure_status': structure_status,
+            'confidence_modifier': round(confidence_modifier, 2)
+        }
 
     async def analyze_coin(self, symbol: str) -> Optional[Dict]:
         try:
@@ -521,18 +1124,21 @@ class MarketAnalyzer:
             fv = float(df_1h['volume'].iloc[-25:-1].sum()) * price
             fvp = float(df_1h['volume'].iloc[-49:-25].sum()) * price if len(df_1h) >= 49 else fv
             fvc = ((fv - fvp) / fvp * 100) if fvp > 0 else 0
-            score = self.score_coin(ind_1h, funding)
+            # Detect market structure
+            structure = self.detect_market_structure(df_1h)
+            # Score with structure as confidence modifier
+            score = self.score_coin(ind_1h, funding, structure)
             signals = self._gen_signals(ind_1h, ind_4h, funding)
             # Calculate support/resistance levels
             levels = self.calculate_levels(df_1h, price)
-            # Calculate momentum analysis for trend insights
-            momentum = self._analyze_momentum(ind_1h, ind_4h, funding)
+            # Calculate momentum analysis for trend insights (now includes structure)
+            momentum = self._analyze_momentum(ind_1h, ind_4h, funding, structure)
             return {'symbol': symbol, 'display_name': symbol.replace('/USDT', ''), 'timestamp': datetime.utcnow().isoformat(),
                     'price': ind_1h.get('price', 0), 'price_change_24h': ind_1h.get('price_change_24h', 0),
                     'indicators': {'1h': ind_1h, '4h': ind_4h}, 'funding_rate': round(funding * 100, 4),
                     'spot_volume': round(spot['volume'], 0), 'spot_volume_change': round(spot['change'], 1),
                     'futures_volume': round(fv, 0), 'futures_volume_change': round(fvc, 1), 'score': score, 'signals': signals,
-                    'levels': levels, 'momentum': momentum}
+                    'levels': levels, 'momentum': momentum, 'structure': structure}
         except Exception as e:
             logger.debug(f"Analyze error {symbol}: {e}")
             return None
@@ -558,11 +1164,14 @@ class MarketAnalyzer:
         if i1.get('macd_bullish'): s.append("[MACD] Bullish")
         return s if s else ["No signals"]
 
-    def _analyze_momentum(self, i1: Dict, i4: Dict, funding: float) -> Dict:
+    def _analyze_momentum(self, i1: Dict, i4: Dict, funding: float, structure: Dict = None) -> Dict:
         """
         Analyze momentum across timeframes to generate human-readable trend insights.
+        Now incorporates market structure for smarter analysis.
         Returns text describing short-term (24-48h) vs higher timeframe outlook.
         """
+        structure = structure or {}
+
         # Extract indicators
         trend_1h = i1.get('trend', 'sideways')
         trend_4h = i4.get('trend', 'sideways') if i4 else 'sideways'
@@ -576,6 +1185,11 @@ class MarketAnalyzer:
         macd_4h_bull = i4.get('macd_bullish', False) if i4 else False
         vol_ratio = i1.get('volume_ratio', 1.0)
         funding_pct = funding * 100
+
+        # Structure data
+        struct_type = structure.get('structure', 'unknown')
+        struct_break = structure.get('structure_break')
+        struct_confidence = structure.get('confidence', 'low')
 
         # Calculate bullish/bearish scores for each timeframe
         # Lower timeframe (1h) - short-term outlook
@@ -620,19 +1234,51 @@ class MarketAnalyzer:
         vol_confirms = vol_ratio >= 1.2
         vol_weak = vol_ratio <= 0.7
 
+        # Structure alignment
+        struct_bullish = struct_type == 'bullish'
+        struct_bearish = struct_type == 'bearish'
+
         # Generate insight text based on conditions
         text = ""
         sentiment = "neutral"  # bullish, bearish, neutral, caution
         confidence = "medium"  # high, medium, low
 
-        # === STRONG CONTINUATION SCENARIOS ===
-        if htf_bias == 'bullish' and ltf_bias == 'bullish':
-            if obv_strength == 'strong' and vol_confirms:
-                text = "Strong bullish momentum. Trend likely to continue across all timeframes."
+        # === STRUCTURE BREAK SCENARIOS (highest priority) ===
+        if struct_break == 'bullish_break':
+            if obv_trend == 'bullish':
+                text = "Bullish structure break with accumulation! Potential trend reversal confirmed by OBV."
                 sentiment = "bullish"
                 confidence = "high"
-            elif obv_strength == 'strong':
-                text = "Bullish trend intact. Both timeframes aligned upward."
+            else:
+                text = "Bullish structure break, but OBV not confirming yet. Watch for follow-through."
+                sentiment = "caution"
+                confidence = "medium"
+        elif struct_break == 'bearish_break':
+            if obv_trend == 'bearish':
+                text = "Bearish structure break with distribution! Potential trend reversal confirmed by OBV."
+                sentiment = "bearish"
+                confidence = "high"
+            else:
+                text = "Bearish structure break, but OBV not confirming yet. Could be a shakeout."
+                sentiment = "caution"
+                confidence = "medium"
+
+        # === STRONG CONTINUATION SCENARIOS ===
+        elif htf_bias == 'bullish' and ltf_bias == 'bullish':
+            if struct_bullish and obv_strength == 'strong':
+                text = "Strong bullish confluence. HH/HL structure + OBV accumulation + timeframe alignment."
+                sentiment = "bullish"
+                confidence = "high"
+            elif struct_bullish:
+                text = "Bullish trend with healthy structure. Higher highs and higher lows intact."
+                sentiment = "bullish"
+                confidence = "high"
+            elif struct_bearish:
+                text = "Indicators bullish but structure still bearish. Early reversal or bull trap?"
+                sentiment = "caution"
+                confidence = "medium"
+            elif obv_strength == 'strong' and vol_confirms:
+                text = "Strong bullish momentum. Trend likely to continue across all timeframes."
                 sentiment = "bullish"
                 confidence = "high"
             else:
@@ -641,12 +1287,20 @@ class MarketAnalyzer:
                 confidence = "medium"
 
         elif htf_bias == 'bearish' and ltf_bias == 'bearish':
-            if obv_strength == 'strong' and vol_confirms:
-                text = "Strong bearish momentum. Downtrend likely to continue across all timeframes."
+            if struct_bearish and obv_strength == 'strong':
+                text = "Strong bearish confluence. LH/LL structure + OBV distribution + timeframe alignment."
                 sentiment = "bearish"
                 confidence = "high"
-            elif obv_strength == 'strong':
-                text = "Bearish trend intact. Both timeframes aligned downward."
+            elif struct_bearish:
+                text = "Bearish trend with healthy structure. Lower highs and lower lows intact."
+                sentiment = "bearish"
+                confidence = "high"
+            elif struct_bullish:
+                text = "Indicators bearish but structure still bullish. Distribution or bear trap?"
+                sentiment = "caution"
+                confidence = "medium"
+            elif obv_strength == 'strong' and vol_confirms:
+                text = "Strong bearish momentum. Downtrend likely to continue across all timeframes."
                 sentiment = "bearish"
                 confidence = "high"
             else:
@@ -769,12 +1423,31 @@ class MarketAnalyzer:
 
     async def scan_all(self) -> List[Dict]:
         results = []
+        btc_data = None
+
+        # First, analyze BTC to detect market regime
+        if 'BTC/USDT' in self.coins:
+            try:
+                btc_data = await self.analyze_coin('BTC/USDT')
+                if btc_data:
+                    self.detect_market_regime(btc_data)
+                    results.append(btc_data)
+                    logger.info(f"Market regime: {self.market_regime['regime_name']} | Weights: OBV {self.market_regime['weights']['obv']}%, Vol {self.market_regime['weights']['volume']}%")
+            except Exception as e:
+                logger.error(f"BTC analysis error: {e}")
+
+        # Then analyze other coins with the detected regime
         for sym in self.coins:
+            if sym == 'BTC/USDT':
+                continue  # Already analyzed
             try:
                 r = await self.analyze_coin(sym)
-                if r: results.append(r)
+                if r:
+                    results.append(r)
                 await asyncio.sleep(0.15)
-            except: pass
+            except:
+                pass
+
         return sorted(results, key=lambda x: x['score']['total_score'], reverse=True)
 
 
@@ -782,6 +1455,7 @@ class AnalyzerApp:
     def __init__(self):
         self.analyzer = MarketAnalyzer()
         self.tracker = HistoricalTracker()
+        self.telegram = TelegramBot(TELEGRAM_BOT_TOKEN, self.tracker)
         self.app = FastAPI(title="Crypto Market Analyzer", version="3.0.0")
         self.app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET)
         self.app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -792,7 +1466,7 @@ class AnalyzerApp:
         self.scan_interval = 300
         self.websockets: Set[WebSocket] = set()
         self._setup_routes()
-        logger.info("App initialized")
+        logger.info("App initialized with Telegram alerts")
 
     def _get_user(self, request: Request) -> Optional[Dict]:
         uid = request.session.get('user_id')
@@ -893,8 +1567,13 @@ class AnalyzerApp:
             user = self._get_user(request)
             if not user: return JSONResponse({'error': 'Not authenticated'}, status_code=401)
             uc = self.tracker.get_user_coins(user['id'])
-            return JSONResponse({'results': [r for r in self.scan_results if r['symbol'] in uc],
-                'last_scan': self.last_scan.isoformat() if self.last_scan else None, 'scan_count': self.scan_count, 'weights': self.analyzer.weights, 'user_coins': uc})
+            return JSONResponse({
+                'results': [r for r in self.scan_results if r['symbol'] in uc],
+                'last_scan': self.last_scan.isoformat() if self.last_scan else None,
+                'scan_count': self.scan_count,
+                'regime': self.analyzer.market_regime,
+                'user_coins': uc
+            })
 
         @self.app.get("/api/coin/{symbol}")
         async def coin(request: Request, symbol: str):
@@ -917,14 +1596,71 @@ class AnalyzerApp:
             asyncio.create_task(self._run_scan())
             return JSONResponse({'status': 'triggered'})
 
-        @self.app.post("/api/weights")
-        async def weights(request: Request):
+        @self.app.get("/api/regime")
+        async def get_regime(request: Request):
+            """Get current market regime and dynamic weights"""
             if not self._get_user(request): return JSONResponse({'error': 'Not authenticated'}, status_code=401)
-            self.analyzer.update_weights(await request.json())
-            return JSONResponse({'status': 'updated', 'weights': self.analyzer.weights})
+            return JSONResponse(self.analyzer.market_regime)
 
-        @self.app.get("/api/weights")
-        async def get_weights(): return JSONResponse(self.analyzer.weights)
+        # === ALERT ENDPOINTS ===
+
+        @self.app.get("/api/alerts/settings")
+        async def get_alert_settings(request: Request):
+            """Get user's alert settings"""
+            user = self._get_user(request)
+            if not user: return JSONResponse({'error': 'Not authenticated'}, status_code=401)
+            settings = self.tracker.get_user_alert_settings(user['id'])
+            return JSONResponse(settings or {
+                'alerts_enabled': False,
+                'telegram_chat_id': None,
+                'alert_structure_break': True,
+                'alert_divergence': True,
+                'alert_high_confidence': True,
+                'alert_rsi_extreme': False
+            })
+
+        @self.app.post("/api/alerts/settings")
+        async def update_alert_settings(request: Request):
+            """Update user's alert preferences"""
+            user = self._get_user(request)
+            if not user: return JSONResponse({'error': 'Not authenticated'}, status_code=401)
+            data = await request.json()
+            allowed_fields = ['alert_structure_break', 'alert_divergence', 'alert_high_confidence', 'alert_rsi_extreme', 'alerts_enabled']
+            updates = {k: v for k, v in data.items() if k in allowed_fields}
+            if updates:
+                self.tracker.create_or_update_alert_settings(user['id'], **updates)
+            settings = self.tracker.get_user_alert_settings(user['id'])
+            return JSONResponse(settings)
+
+        @self.app.post("/api/alerts/link")
+        async def generate_link_code(request: Request):
+            """Generate a code to link Telegram"""
+            user = self._get_user(request)
+            if not user: return JSONResponse({'error': 'Not authenticated'}, status_code=401)
+            code = self.tracker.generate_link_code(user['id'])
+            return JSONResponse({'code': code, 'expires_in': '30 minutes', 'bot_username': 'YourCryptoSignalsBot'})
+
+        @self.app.post("/api/alerts/unlink")
+        async def unlink_telegram(request: Request):
+            """Unlink Telegram from account"""
+            user = self._get_user(request)
+            if not user: return JSONResponse({'error': 'Not authenticated'}, status_code=401)
+            self.tracker.unlink_telegram(user['id'])
+            return JSONResponse({'status': 'unlinked'})
+
+        @self.app.post("/api/alerts/test")
+        async def test_alert(request: Request):
+            """Send a test alert to verify connection"""
+            user = self._get_user(request)
+            if not user: return JSONResponse({'error': 'Not authenticated'}, status_code=401)
+            settings = self.tracker.get_user_alert_settings(user['id'])
+            if not settings or not settings.get('telegram_chat_id'):
+                return JSONResponse({'error': 'Telegram not linked'}, status_code=400)
+            success = await self.telegram.send_message(
+                settings['telegram_chat_id'],
+                "🔔 <b>Test Alert</b>\n\nYour alerts are working! You'll receive notifications for your watchlist."
+            )
+            return JSONResponse({'status': 'sent' if success else 'failed'})
 
         @self.app.websocket("/ws")
         async def ws(websocket: WebSocket):
@@ -952,7 +1688,75 @@ class AnalyzerApp:
             self.tracker.log_batch(self.scan_results)
             logger.info(f"Scan #{self.scan_count}: {len(self.scan_results)} coins")
             await self._broadcast({'type': 'scan_complete', 'count': len(self.scan_results)})
+            # Check and send alerts
+            await self._check_and_send_alerts()
         except Exception as e: logger.error(f"Scan error: {e}")
+
+    async def _check_and_send_alerts(self):
+        """Check scan results and send alerts to users who have them enabled"""
+        try:
+            users_with_alerts = self.tracker.get_users_for_alerts()
+            if not users_with_alerts:
+                return
+
+            for user in users_with_alerts:
+                user_id = user['user_id']
+                chat_id = user['telegram_chat_id']
+                user_coins = self.tracker.get_user_coins(user_id)
+
+                # Filter results to user's watchlist
+                user_results = [r for r in self.scan_results if r['symbol'] in user_coins]
+
+                for coin in user_results:
+                    symbol = coin['symbol']
+                    alerts_to_send = []
+
+                    # Check for structure break
+                    if user.get('alert_structure_break', 1):
+                        struct_break = coin.get('structure', {}).get('structure_break')
+                        if struct_break:
+                            alert_type = 'structure_break'
+                            if not self.tracker.was_alert_sent_recently(user_id, symbol, alert_type, hours=2):
+                                detail = "Bullish structure break detected!" if struct_break == 'bullish_break' else "Bearish structure break detected!"
+                                alerts_to_send.append((alert_type, detail))
+
+                    # Check for divergence
+                    if user.get('alert_divergence', 1):
+                        obv_div = coin.get('indicators', {}).get('1h', {}).get('obv_divergence', 'none')
+                        if obv_div != 'none':
+                            alert_type = 'divergence'
+                            if not self.tracker.was_alert_sent_recently(user_id, symbol, alert_type, hours=4):
+                                detail = "Bullish OBV divergence - potential reversal" if obv_div == 'bullish' else "Bearish OBV divergence - potential top"
+                                alerts_to_send.append((alert_type, detail))
+
+                    # Check for high confidence momentum
+                    if user.get('alert_high_confidence', 1):
+                        momentum = coin.get('momentum', {})
+                        if momentum.get('confidence') == 'high':
+                            alert_type = 'high_confidence'
+                            if not self.tracker.was_alert_sent_recently(user_id, symbol, alert_type, hours=4):
+                                detail = momentum.get('text', 'High confidence signal detected')
+                                alerts_to_send.append((alert_type, detail))
+
+                    # Check for RSI extremes
+                    if user.get('alert_rsi_extreme', 0):
+                        rsi = coin.get('indicators', {}).get('1h', {}).get('rsi', 50)
+                        if rsi < 25 or rsi > 75:
+                            alert_type = 'rsi_extreme'
+                            if not self.tracker.was_alert_sent_recently(user_id, symbol, alert_type, hours=2):
+                                detail = f"RSI extremely oversold ({rsi:.1f})" if rsi < 25 else f"RSI extremely overbought ({rsi:.1f})"
+                                alerts_to_send.append((alert_type, detail))
+
+                    # Send alerts
+                    for alert_type, detail in alerts_to_send:
+                        message = self.telegram.format_alert(coin, alert_type, detail)
+                        success = await self.telegram.send_message(chat_id, message)
+                        if success:
+                            self.tracker.log_sent_alert(user_id, symbol, alert_type)
+                            logger.info(f"Alert sent: {symbol} {alert_type} to user {user_id}")
+
+        except Exception as e:
+            logger.error(f"Alert check error: {e}")
 
     async def scan_loop(self):
         while self.running: await self._run_scan(); await asyncio.sleep(self.scan_interval)
@@ -994,12 +1798,17 @@ app = get_app().app
 async def startup():
     inst = get_app()
     inst.running = True
+    inst.telegram.running = True
     asyncio.create_task(inst.scan_loop())
     asyncio.create_task(inst.aggregation_loop())
-    logger.info("Started")
+    asyncio.create_task(inst.telegram.poll_loop())
+    logger.info("Started with Telegram alerts")
 
 @app.on_event("shutdown")
-async def shutdown(): get_app().running = False
+async def shutdown():
+    inst = get_app()
+    inst.running = False
+    inst.telegram.running = False
 
 if __name__ == "__main__":
     os.makedirs("templates", exist_ok=True)
