@@ -297,10 +297,196 @@ class MarketAnalyzer:
             return {'price': round(price, 6), 'price_change_24h': round(price_chg_24h, 2), 'volume_ratio': round(vol_ratio, 2),
                     'obv': round(obv_cur, 2), 'obv_change': round(obv_chg, 2), 'obv_trend': obv_trend, 'obv_strength': obv_strength,
                     'obv_divergence': obv_div, 'divergence_threshold': round(div_thresh, 2), 'rsi': round(rsi_val, 2),
-                    'sma_20': round(sma20_v, 6), 'sma_50': round(sma50_v, 6), 'trend': trend, 'atr_percent': round(atr_pct, 2), 'macd_bullish': macd_bull}
+                    'sma_20': round(sma20_v, 6), 'sma_50': round(sma50_v, 6), 'trend': trend, 'atr_percent': round(atr_pct, 2), 'macd_bullish': macd_bull,
+                    'atr': round(atr_val, 6)}
         except Exception as e:
             logger.error(f"Indicator error: {e}")
             return {}
+
+    def calculate_levels(self, df: pd.DataFrame, current_price: float) -> Dict:
+        """Calculate support/resistance levels using volume profile and swing points"""
+        if df.empty or len(df) < 50:
+            return {'supports': [], 'resistances': [], 'volume_profile': []}
+
+        try:
+            high, low, close, volume = df['high'].values, df['low'].values, df['close'].values, df['volume'].values
+
+            # Calculate ATR for level strength threshold
+            atr = float(ta_lib.volatility.average_true_range(df['high'], df['low'], df['close'], window=14).iloc[-1])
+            atr_pct = atr / current_price if current_price > 0 else 0.02
+
+            # 1. Find Swing Highs and Lows (local extrema)
+            swing_highs, swing_lows = [], []
+            lookback = 5  # candles on each side to confirm swing
+
+            for i in range(lookback, len(df) - lookback):
+                # Swing High: highest point in the window
+                if high[i] == max(high[i-lookback:i+lookback+1]):
+                    swing_highs.append({'price': float(high[i]), 'index': i, 'volume': float(volume[i])})
+                # Swing Low: lowest point in the window
+                if low[i] == min(low[i-lookback:i+lookback+1]):
+                    swing_lows.append({'price': float(low[i]), 'index': i, 'volume': float(volume[i])})
+
+            # 2. Volume Profile Analysis - find high volume price zones
+            price_min, price_max = float(low.min()), float(high.max())
+            num_bins = 20
+            bin_size = (price_max - price_min) / num_bins if price_max > price_min else price_max * 0.01
+
+            volume_profile = []
+            for i in range(num_bins):
+                bin_low = price_min + i * bin_size
+                bin_high = bin_low + bin_size
+                bin_mid = (bin_low + bin_high) / 2
+
+                # Sum volume for candles that traded in this price range
+                bin_volume = 0
+                for j in range(len(df)):
+                    if low[j] <= bin_high and high[j] >= bin_low:
+                        # Proportional volume based on overlap
+                        candle_range = high[j] - low[j] if high[j] > low[j] else 0.0001
+                        overlap = min(high[j], bin_high) - max(low[j], bin_low)
+                        if overlap > 0:
+                            bin_volume += volume[j] * (overlap / candle_range)
+
+                volume_profile.append({'price': round(bin_mid, 6), 'volume': round(bin_volume, 2), 'low': round(bin_low, 6), 'high': round(bin_high, 6)})
+
+            # Find Point of Control (POC) - highest volume level
+            poc = max(volume_profile, key=lambda x: x['volume']) if volume_profile else None
+
+            # 3. Identify High Volume Nodes (HVN) - top 30% volume levels
+            sorted_by_vol = sorted(volume_profile, key=lambda x: x['volume'], reverse=True)
+            hvn_threshold = len(sorted_by_vol) * 0.3
+            hvn_levels = sorted_by_vol[:int(hvn_threshold)]
+
+            # 4. Cluster nearby levels and calculate strength
+            def cluster_levels(levels: List[Dict], threshold: float) -> List[Dict]:
+                if not levels:
+                    return []
+                sorted_levels = sorted(levels, key=lambda x: x['price'])
+                clusters = []
+                current_cluster = [sorted_levels[0]]
+
+                for level in sorted_levels[1:]:
+                    if abs(level['price'] - current_cluster[-1]['price']) / current_price < threshold:
+                        current_cluster.append(level)
+                    else:
+                        # Finalize cluster
+                        avg_price = sum(l['price'] for l in current_cluster) / len(current_cluster)
+                        total_vol = sum(l.get('volume', 0) for l in current_cluster)
+                        clusters.append({'price': avg_price, 'volume': total_vol, 'touches': len(current_cluster)})
+                        current_cluster = [level]
+
+                # Don't forget last cluster
+                if current_cluster:
+                    avg_price = sum(l['price'] for l in current_cluster) / len(current_cluster)
+                    total_vol = sum(l.get('volume', 0) for l in current_cluster)
+                    clusters.append({'price': avg_price, 'volume': total_vol, 'touches': len(current_cluster)})
+
+                return clusters
+
+            # Cluster swing levels (2% threshold)
+            support_clusters = cluster_levels(swing_lows, 0.02)
+            resistance_clusters = cluster_levels(swing_highs, 0.02)
+
+            # 5. Combine with volume profile HVN levels
+            for hvn in hvn_levels:
+                if hvn['price'] < current_price:
+                    # Check if close to existing support
+                    merged = False
+                    for sup in support_clusters:
+                        if abs(sup['price'] - hvn['price']) / current_price < 0.015:
+                            sup['volume'] += hvn['volume']
+                            sup['hvn'] = True
+                            merged = True
+                            break
+                    if not merged:
+                        support_clusters.append({'price': hvn['price'], 'volume': hvn['volume'], 'touches': 1, 'hvn': True})
+                else:
+                    # Check if close to existing resistance
+                    merged = False
+                    for res in resistance_clusters:
+                        if abs(res['price'] - hvn['price']) / current_price < 0.015:
+                            res['volume'] += hvn['volume']
+                            res['hvn'] = True
+                            merged = True
+                            break
+                    if not merged:
+                        resistance_clusters.append({'price': hvn['price'], 'volume': hvn['volume'], 'touches': 1, 'hvn': True})
+
+            # 6. Calculate strength score for each level
+            max_vol = max([l['volume'] for l in support_clusters + resistance_clusters]) if support_clusters or resistance_clusters else 1
+
+            def calc_strength(level: Dict, is_support: bool) -> Dict:
+                vol_score = (level['volume'] / max_vol) * 40 if max_vol > 0 else 0
+                touch_score = min(level['touches'] * 15, 30)
+                # Distance from current price (closer = more relevant)
+                dist_pct = abs(level['price'] - current_price) / current_price
+                dist_score = max(0, 30 - dist_pct * 100)
+
+                strength = vol_score + touch_score + dist_score
+                strength = min(100, max(0, strength))
+
+                # Calculate distance percentage
+                distance_pct = ((current_price - level['price']) / current_price * 100) if is_support else ((level['price'] - current_price) / current_price * 100)
+
+                return {
+                    'price': round(level['price'], 6),
+                    'strength': round(strength),
+                    'type': 'demand' if is_support else 'supply',
+                    'distance_pct': round(distance_pct, 2),
+                    'touches': level.get('touches', 1),
+                    'hvn': level.get('hvn', False)
+                }
+
+            # Filter and sort supports (below current price)
+            supports = [calc_strength(s, True) for s in support_clusters if s['price'] < current_price * 0.995]
+            supports = sorted(supports, key=lambda x: x['price'], reverse=True)[:4]  # Top 4 closest supports
+
+            # Filter and sort resistances (above current price)
+            resistances = [calc_strength(r, False) for r in resistance_clusters if r['price'] > current_price * 1.005]
+            resistances = sorted(resistances, key=lambda x: x['price'])[:4]  # Top 4 closest resistances
+
+            # Add SMA levels as dynamic support/resistance
+            sma20 = float(ta_lib.trend.sma_indicator(df['close'], window=20).iloc[-1])
+            sma50 = float(ta_lib.trend.sma_indicator(df['close'], window=50).iloc[-1]) if len(df) >= 50 else None
+
+            dynamic_levels = []
+            if sma20 and abs(sma20 - current_price) / current_price > 0.005:
+                dynamic_levels.append({
+                    'price': round(sma20, 6),
+                    'type': 'sma20',
+                    'label': 'SMA 20',
+                    'is_support': sma20 < current_price
+                })
+            if sma50 and abs(sma50 - current_price) / current_price > 0.005:
+                dynamic_levels.append({
+                    'price': round(sma50, 6),
+                    'type': 'sma50',
+                    'label': 'SMA 50',
+                    'is_support': sma50 < current_price
+                })
+
+            # Point of Control
+            poc_data = None
+            if poc:
+                poc_data = {
+                    'price': round(poc['price'], 6),
+                    'is_support': poc['price'] < current_price,
+                    'distance_pct': round(abs(poc['price'] - current_price) / current_price * 100, 2)
+                }
+
+            return {
+                'supports': supports,
+                'resistances': resistances,
+                'poc': poc_data,
+                'dynamic_levels': dynamic_levels,
+                'atr': round(atr, 6),
+                'atr_pct': round(atr_pct * 100, 2)
+            }
+
+        except Exception as e:
+            logger.error(f"Levels calculation error: {e}")
+            return {'supports': [], 'resistances': [], 'poc': None, 'dynamic_levels': [], 'atr': 0, 'atr_pct': 0}
 
     def score_coin(self, ind: Dict, funding: float) -> Dict:
         scores, details = {}, []
@@ -337,11 +523,14 @@ class MarketAnalyzer:
             fvc = ((fv - fvp) / fvp * 100) if fvp > 0 else 0
             score = self.score_coin(ind_1h, funding)
             signals = self._gen_signals(ind_1h, ind_4h, funding)
+            # Calculate support/resistance levels
+            levels = self.calculate_levels(df_1h, price)
             return {'symbol': symbol, 'display_name': symbol.replace('/USDT', ''), 'timestamp': datetime.utcnow().isoformat(),
                     'price': ind_1h.get('price', 0), 'price_change_24h': ind_1h.get('price_change_24h', 0),
                     'indicators': {'1h': ind_1h, '4h': ind_4h}, 'funding_rate': round(funding * 100, 4),
                     'spot_volume': round(spot['volume'], 0), 'spot_volume_change': round(spot['change'], 1),
-                    'futures_volume': round(fv, 0), 'futures_volume_change': round(fvc, 1), 'score': score, 'signals': signals}
+                    'futures_volume': round(fv, 0), 'futures_volume_change': round(fvc, 1), 'score': score, 'signals': signals,
+                    'levels': levels}
         except Exception as e:
             logger.debug(f"Analyze error {symbol}: {e}")
             return None

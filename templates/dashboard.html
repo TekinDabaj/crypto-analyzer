@@ -160,6 +160,29 @@
     .signals-grid{display:flex;flex-wrap:wrap;gap:8px}
     .signal-chip{padding:8px 14px;border-radius:6px;font-size:12px;font-weight:500}
 
+    /* Levels/Entry Targets Section */
+    .levels-section{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:20px}
+    .levels-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+    .levels-column h4{font-size:12px;text-transform:uppercase;color:var(--text-secondary);margin-bottom:12px;display:flex;align-items:center;gap:8px}
+    .levels-column h4::before{content:'';width:8px;height:8px;border-radius:2px}
+    .levels-column.support h4::before{background:var(--green)}
+    .levels-column.resistance h4::before{background:var(--red)}
+    .level-item{display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-tertiary);border-radius:8px;margin-bottom:8px;border-left:3px solid transparent}
+    .level-item.support{border-left-color:var(--green)}
+    .level-item.resistance{border-left-color:var(--red)}
+    .level-item.poc{border-left-color:var(--purple);background:rgba(139,92,246,0.1)}
+    .level-item.sma{border-left-color:var(--blue);background:rgba(0,180,255,0.1)}
+    .level-price{font-size:14px;font-weight:600;flex:1}
+    .level-meta{text-align:right}
+    .level-distance{font-size:12px;font-weight:600}
+    .level-strength{font-size:10px;color:var(--text-secondary)}
+    .level-badge{display:inline-block;padding:2px 6px;border-radius:3px;font-size:9px;font-weight:600;margin-left:6px}
+    .level-badge.hvn{background:rgba(139,92,246,0.3);color:var(--purple)}
+    .level-badge.poc{background:rgba(255,184,0,0.3);color:var(--yellow)}
+    .strength-bar{width:60px;height:4px;background:var(--bg-primary);border-radius:2px;overflow:hidden;margin-top:4px}
+    .strength-fill{height:100%;border-radius:2px}
+    .no-levels{color:var(--text-secondary);font-size:12px;padding:10px;text-align:center}
+
     /* History Section */
     .history-section{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;overflow:hidden}
     .history-header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
@@ -197,8 +220,8 @@
     .spinner{width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--purple);border-radius:50%;animation:spin 1s linear infinite;margin-bottom:14px}
     @keyframes spin{to{transform:rotate(360deg)}}
 
-    @media(max-width:1000px){.btc-grid{grid-template-columns:repeat(3,1fr)}.detail-grid{grid-template-columns:1fr}.indicator-grid{grid-template-columns:repeat(2,1fr)}}
-    @media(max-width:800px){.main{grid-template-columns:1fr}.sidebar{display:none}.indicator-grid{grid-template-columns:repeat(2,1fr)}}
+    @media(max-width:1000px){.btc-grid{grid-template-columns:repeat(3,1fr)}.detail-grid{grid-template-columns:1fr}.indicator-grid{grid-template-columns:repeat(2,1fr)}.levels-grid{grid-template-columns:1fr}}
+    @media(max-width:800px){.main{grid-template-columns:1fr}.sidebar{display:none}.indicator-grid{grid-template-columns:repeat(2,1fr)}.levels-grid{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
@@ -390,6 +413,86 @@ function fmtPrice(p){return p>=1000?p.toLocaleString("en-US",{minimumFractionDig
 function fmtVol(v){return !v?"0":v>=1e9?(v/1e9).toFixed(2)+"B":v>=1e6?(v/1e6).toFixed(2)+"M":v>=1e3?(v/1e3).toFixed(1)+"K":v.toFixed(0)}
 function fmtDate(d){return new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}
 function getScoreColor(score){return score>=80?'var(--green)':score>=70?'var(--blue)':score>=60?'var(--yellow)':'var(--red)'}
+function getStrengthColor(s){return s>=70?'var(--green)':s>=40?'var(--yellow)':'var(--red)'}
+
+function renderLevelsSection(coin){
+  const levels=coin.levels;
+  if(!levels)return '<div class="levels-section"><div class="detail-card-title">Entry Targets</div><div class="no-levels">No level data available</div></div>';
+
+  const supports=levels.supports||[];
+  const resistances=levels.resistances||[];
+  const poc=levels.poc;
+  const dynamic=levels.dynamic_levels||[];
+
+  // Render support item
+  function renderLevelItem(level,type){
+    const isSupport=type==='support';
+    const color=isSupport?'var(--green)':'var(--red)';
+    const badges=[];
+    if(level.hvn)badges.push('<span class="level-badge hvn">HVN</span>');
+    if(level.touches>1)badges.push(`<span class="level-badge" style="background:rgba(255,255,255,0.1);color:var(--text-secondary)">${level.touches}x</span>`);
+
+    return `
+      <div class="level-item ${type}">
+        <div class="level-price">$${fmtPrice(level.price)}${badges.join('')}</div>
+        <div class="level-meta">
+          <div class="level-distance ${isSupport?'positive':'negative'}">${isSupport?'-':'+'}${level.distance_pct}%</div>
+          <div class="strength-bar"><div class="strength-fill" style="width:${level.strength}%;background:${getStrengthColor(level.strength)}"></div></div>
+          <div class="level-strength">${level.strength>=70?'Strong':level.strength>=40?'Moderate':'Weak'}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  // Render POC
+  function renderPOC(){
+    if(!poc)return '';
+    return `
+      <div class="level-item poc">
+        <div class="level-price">$${fmtPrice(poc.price)}<span class="level-badge poc">POC</span></div>
+        <div class="level-meta">
+          <div class="level-distance">${poc.distance_pct}% away</div>
+          <div class="level-strength">Point of Control</div>
+        </div>
+      </div>
+    `;
+  }
+
+  // Render dynamic levels (SMAs)
+  function renderDynamic(d){
+    return `
+      <div class="level-item sma">
+        <div class="level-price">$${fmtPrice(d.price)}<span class="level-badge" style="background:rgba(0,180,255,0.3);color:var(--blue)">${d.label}</span></div>
+        <div class="level-meta">
+          <div class="level-strength">${d.is_support?'Dynamic Support':'Dynamic Resistance'}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  const supportDynamic=dynamic.filter(d=>d.is_support);
+  const resistDynamic=dynamic.filter(d=>!d.is_support);
+
+  return `
+    <div class="levels-section">
+      <div class="detail-card-title">Entry Targets & Key Levels</div>
+      ${poc?`<div style="margin-bottom:16px">${renderPOC()}</div>`:''}
+      <div class="levels-grid">
+        <div class="levels-column support">
+          <h4>Support / Demand Zones (Long)</h4>
+          ${supports.length>0?supports.map(s=>renderLevelItem(s,'support')).join(''):'<div class="no-levels">No support levels found</div>'}
+          ${supportDynamic.map(d=>renderDynamic(d)).join('')}
+        </div>
+        <div class="levels-column resistance">
+          <h4>Resistance / Supply Zones (Short)</h4>
+          ${resistances.length>0?resistances.map(r=>renderLevelItem(r,'resistance')).join(''):'<div class="no-levels">No resistance levels found</div>'}
+          ${resistDynamic.map(d=>renderDynamic(d)).join('')}
+        </div>
+      </div>
+      ${levels.atr_pct?`<div style="margin-top:12px;font-size:11px;color:var(--text-secondary);text-align:center">ATR: ${levels.atr_pct}% · Volatility-adjusted levels based on 200 1h candles</div>`:''}
+    </div>
+  `;
+}
 
 // Detail View Functions
 function showDetail(sym){
@@ -536,6 +639,8 @@ function renderDetailView(coin){
         ${coin.signals.length===0||coin.signals[0]==='No signals'?'<span style="color:var(--text-secondary)">No active signals</span>':''}
       </div>
     </div>
+
+    ${renderLevelsSection(coin)}
 
     <div class="history-section">
       <div class="history-header">
