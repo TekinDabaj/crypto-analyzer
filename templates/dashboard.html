@@ -70,6 +70,38 @@
     .sentiment-bullish{background:rgba(0,214,143,0.2);color:var(--green);border:1px solid var(--green)}
     .sentiment-bearish{background:rgba(255,77,106,0.2);color:var(--red);border:1px solid var(--red)}
     .sentiment-neutral{background:rgba(255,184,0,0.2);color:var(--yellow);border:1px solid var(--yellow)}
+
+    /* Momentum Insight Box */
+    .momentum-box{margin-top:12px;margin-bottom:20px;padding:12px 16px;background:var(--bg-tertiary);border-radius:8px;border-left:3px solid var(--purple);position:relative}
+    .momentum-box.bullish{border-left-color:var(--green);background:rgba(0,214,143,0.08)}
+    .momentum-box.bearish{border-left-color:var(--red);background:rgba(255,77,106,0.08)}
+    .momentum-box.caution{border-left-color:var(--yellow);background:rgba(255,184,0,0.08)}
+    .momentum-box.neutral{border-left-color:var(--text-secondary);background:rgba(136,136,170,0.08)}
+    .momentum-header{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+    .momentum-icon{font-size:14px}
+    .momentum-label{font-size:10px;text-transform:uppercase;color:var(--text-secondary);letter-spacing:0.5px}
+    .momentum-confidence{font-size:9px;padding:2px 6px;border-radius:10px;background:rgba(255,255,255,0.1);color:var(--text-secondary);margin-left:auto}
+    .momentum-confidence.high{background:rgba(0,214,143,0.2);color:var(--green)}
+    .momentum-confidence.medium{background:rgba(255,184,0,0.2);color:var(--yellow)}
+    .momentum-confidence.low{background:rgba(136,136,170,0.2);color:var(--text-secondary)}
+    .momentum-text{font-size:13px;line-height:1.5;color:var(--text-primary)}
+    .momentum-bias{display:flex;gap:12px;margin-top:8px;font-size:10px;color:var(--text-secondary)}
+    .momentum-bias span{display:flex;align-items:center;gap:4px}
+    .bias-dot{width:6px;height:6px;border-radius:50%}
+    .bias-dot.bullish{background:var(--green)}
+    .bias-dot.bearish{background:var(--red)}
+    .bias-dot.neutral{background:var(--text-secondary)}
+
+    /* Compact momentum for table rows */
+    .momentum-compact{padding:10px 14px;background:var(--bg-tertiary);border-radius:6px;border-left:3px solid var(--purple);font-size:12px;line-height:1.4;color:var(--text-secondary)}
+    .momentum-compact.bullish{border-left-color:var(--green);color:#7fffd4;background:rgba(0,214,143,0.06)}
+    .momentum-compact.bearish{border-left-color:var(--red);color:#ffb3be;background:rgba(255,77,106,0.06)}
+    .momentum-compact.caution{border-left-color:var(--yellow);color:#ffe066;background:rgba(255,184,0,0.06)}
+    .momentum-compact.neutral{border-left-color:var(--text-secondary);background:rgba(136,136,170,0.06)}
+    .momentum-row{border-top:none!important}
+    .momentum-row td{padding:0 14px 14px 14px!important;border-top:none!important}
+    .momentum-row:hover{background:transparent!important}
+    .coins-table tbody tr:not(.momentum-row):hover+.momentum-row{background:rgba(139,92,246,0.08)}
     .table-controls{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:12px;flex-wrap:wrap}
     .search-box{display:flex;align-items:center;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:6px;padding:0 12px}
     .search-box input{background:transparent;border:none;color:var(--text-primary);padding:10px;font-size:13px;width:180px;outline:none}
@@ -279,6 +311,18 @@
             <div class="btc-stat"><div class="btc-stat-label">OBV</div><div class="btc-stat-value" id="btc-obv">--</div></div>
             <div class="btc-stat"><div class="btc-stat-label">Funding</div><div class="btc-stat-value" id="btc-funding">--</div></div>
           </div>
+          <div class="momentum-box neutral" id="btc-momentum">
+            <div class="momentum-header">
+              <span class="momentum-icon">📊</span>
+              <span class="momentum-label">Trend Insight</span>
+              <span class="momentum-confidence" id="btc-momentum-confidence">--</span>
+            </div>
+            <div class="momentum-text" id="btc-momentum-text">Loading momentum analysis...</div>
+            <div class="momentum-bias">
+              <span><span class="bias-dot neutral" id="btc-ltf-dot"></span>Short-term: <strong id="btc-ltf-bias">--</strong></span>
+              <span><span class="bias-dot neutral" id="btc-htf-dot"></span>Macro: <strong id="btc-htf-bias">--</strong></span>
+            </div>
+          </div>
         </div>
         <div class="table-controls">
           <div class="search-box"><span>🔍</span><input type="text" id="search-input" placeholder="Search..." oninput="applyFilters()"></div>
@@ -368,6 +412,21 @@ function updateBTC(){
   document.getElementById("btc-obv").textContent=i.obv_trend.toUpperCase();
   document.getElementById("btc-obv").className="btc-stat-value "+(i.obv_trend==="bullish"?"positive":i.obv_trend==="bearish"?"negative":"");
   document.getElementById("btc-funding").textContent=btcData.funding_rate.toFixed(3)+"%";
+
+  // Update BTC momentum insight
+  if(btcData.momentum){
+    const m=btcData.momentum;
+    const mBox=document.getElementById("btc-momentum");
+    mBox.className="momentum-box "+m.sentiment;
+    document.getElementById("btc-momentum-text").textContent=m.text;
+    const confEl=document.getElementById("btc-momentum-confidence");
+    confEl.textContent=m.confidence.toUpperCase();
+    confEl.className="momentum-confidence "+m.confidence;
+    document.getElementById("btc-ltf-bias").textContent=m.ltf_bias.toUpperCase();
+    document.getElementById("btc-htf-bias").textContent=m.htf_bias.toUpperCase();
+    document.getElementById("btc-ltf-dot").className="bias-dot "+m.ltf_bias;
+    document.getElementById("btc-htf-dot").className="bias-dot "+m.htf_bias;
+  }
 }
 
 async function updateWeights(){
@@ -398,12 +457,14 @@ function renderTable(coins){
     coins.map(c=>{
       const i=c.indicators["1h"];
       const oc=i.obv_trend==="bullish"?"positive":i.obv_trend==="bearish"?"negative":"";
+      const m=c.momentum||{text:'Analyzing...',sentiment:'neutral',confidence:'low'};
       return '<tr onclick="showDetail(\''+c.symbol+'\')"><td><div class="coin-cell"><div class="coin-icon">'+c.display_name.slice(0,2)+'</div><div><div class="coin-name">'+c.display_name+'</div><div class="coin-pair">USDT</div></div></div></td>'+
         '<td>$'+fmtPrice(c.price)+'</td><td class="'+(c.price_change_24h>=0?"positive":"negative")+'">'+(c.price_change_24h>0?"+":"")+c.price_change_24h+'%</td>'+
         '<td><div class="obv-cell"><span class="obv-trend '+oc+'">'+i.obv_trend.toUpperCase()+'</span><span class="obv-detail">'+(i.obv_change>0?"+":"")+i.obv_change.toFixed(1)+'%</span></div></td>'+
         '<td>'+c.funding_rate.toFixed(3)+'%</td><td><span class="score-badge '+scoreClass(c.score.grade)+'">'+c.score.grade+'</span></td>'+
         '<td><div class="signals-cell">'+c.signals.slice(0,3).map(s=>'<span class="signal-tag '+sigClass(s)+'">'+s+'</span>').join("")+'</div></td>'+
-        '<td><button class="remove-btn" onclick="event.stopPropagation();removeCoin(\''+c.symbol+'\')">Remove</button></td></tr>'
+        '<td><button class="remove-btn" onclick="event.stopPropagation();removeCoin(\''+c.symbol+'\')">Remove</button></td></tr>'+
+        '<tr onclick="showDetail(\''+c.symbol+'\')" class="momentum-row"><td colspan="8"><div class="momentum-compact '+m.sentiment+'">'+m.text+'</div></td></tr>'
     }).join("")+'</tbody></table>';
 }
 
@@ -631,6 +692,21 @@ function renderDetailView(coin){
         <div class="indicator-sub">4h: ${(i4.trend||'--').toUpperCase()}</div>
       </div>
     </div>
+
+    ${coin.momentum?`
+    <div class="momentum-box ${coin.momentum.sentiment}">
+      <div class="momentum-header">
+        <span class="momentum-icon">📊</span>
+        <span class="momentum-label">Trend Insight (24-48h Outlook)</span>
+        <span class="momentum-confidence ${coin.momentum.confidence}">${coin.momentum.confidence.toUpperCase()}</span>
+      </div>
+      <div class="momentum-text">${coin.momentum.text}</div>
+      <div class="momentum-bias">
+        <span><span class="bias-dot ${coin.momentum.ltf_bias}"></span>Short-term (1h): <strong>${coin.momentum.ltf_bias.toUpperCase()}</strong></span>
+        <span><span class="bias-dot ${coin.momentum.htf_bias}"></span>Macro (4h): <strong>${coin.momentum.htf_bias.toUpperCase()}</strong></span>
+      </div>
+    </div>
+    `:''}
 
     <div class="signals-section">
       <div class="detail-card-title">Active Signals</div>

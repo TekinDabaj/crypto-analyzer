@@ -525,12 +525,14 @@ class MarketAnalyzer:
             signals = self._gen_signals(ind_1h, ind_4h, funding)
             # Calculate support/resistance levels
             levels = self.calculate_levels(df_1h, price)
+            # Calculate momentum analysis for trend insights
+            momentum = self._analyze_momentum(ind_1h, ind_4h, funding)
             return {'symbol': symbol, 'display_name': symbol.replace('/USDT', ''), 'timestamp': datetime.utcnow().isoformat(),
                     'price': ind_1h.get('price', 0), 'price_change_24h': ind_1h.get('price_change_24h', 0),
                     'indicators': {'1h': ind_1h, '4h': ind_4h}, 'funding_rate': round(funding * 100, 4),
                     'spot_volume': round(spot['volume'], 0), 'spot_volume_change': round(spot['change'], 1),
                     'futures_volume': round(fv, 0), 'futures_volume_change': round(fvc, 1), 'score': score, 'signals': signals,
-                    'levels': levels}
+                    'levels': levels, 'momentum': momentum}
         except Exception as e:
             logger.debug(f"Analyze error {symbol}: {e}")
             return None
@@ -555,6 +557,215 @@ class MarketAnalyzer:
         elif t1 == 'downtrend' and t4 == 'downtrend': s.append("[TREND] Bearish alignment")
         if i1.get('macd_bullish'): s.append("[MACD] Bullish")
         return s if s else ["No signals"]
+
+    def _analyze_momentum(self, i1: Dict, i4: Dict, funding: float) -> Dict:
+        """
+        Analyze momentum across timeframes to generate human-readable trend insights.
+        Returns text describing short-term (24-48h) vs higher timeframe outlook.
+        """
+        # Extract indicators
+        trend_1h = i1.get('trend', 'sideways')
+        trend_4h = i4.get('trend', 'sideways') if i4 else 'sideways'
+        obv_trend = i1.get('obv_trend', 'neutral')
+        obv_strength = i1.get('obv_strength', 'weak')
+        obv_div = i1.get('obv_divergence', 'none')
+        obv_4h = i4.get('obv_trend', 'neutral') if i4 else 'neutral'
+        rsi = i1.get('rsi', 50)
+        rsi_4h = i4.get('rsi', 50) if i4 else 50
+        macd_bull = i1.get('macd_bullish', False)
+        macd_4h_bull = i4.get('macd_bullish', False) if i4 else False
+        vol_ratio = i1.get('volume_ratio', 1.0)
+        funding_pct = funding * 100
+
+        # Calculate bullish/bearish scores for each timeframe
+        # Lower timeframe (1h) - short-term outlook
+        ltf_bull_score = 0
+        ltf_bear_score = 0
+
+        if trend_1h == 'uptrend': ltf_bull_score += 2
+        elif trend_1h == 'downtrend': ltf_bear_score += 2
+
+        if obv_trend == 'bullish': ltf_bull_score += 2 if obv_strength == 'strong' else 1
+        elif obv_trend == 'bearish': ltf_bear_score += 2 if obv_strength == 'strong' else 1
+
+        if macd_bull: ltf_bull_score += 1
+        else: ltf_bear_score += 1
+
+        if rsi < 30: ltf_bull_score += 1  # Oversold = potential bounce
+        elif rsi > 70: ltf_bear_score += 1  # Overbought = potential pullback
+        elif rsi < 45: ltf_bear_score += 0.5
+        elif rsi > 55: ltf_bull_score += 0.5
+
+        # Higher timeframe (4h) - macro outlook
+        htf_bull_score = 0
+        htf_bear_score = 0
+
+        if trend_4h == 'uptrend': htf_bull_score += 2
+        elif trend_4h == 'downtrend': htf_bear_score += 2
+
+        if obv_4h == 'bullish': htf_bull_score += 1.5
+        elif obv_4h == 'bearish': htf_bear_score += 1.5
+
+        if macd_4h_bull: htf_bull_score += 1
+        else: htf_bear_score += 1
+
+        if rsi_4h < 35: htf_bull_score += 1
+        elif rsi_4h > 65: htf_bear_score += 1
+
+        # Determine bias for each timeframe
+        ltf_bias = 'bullish' if ltf_bull_score > ltf_bear_score + 1 else 'bearish' if ltf_bear_score > ltf_bull_score + 1 else 'neutral'
+        htf_bias = 'bullish' if htf_bull_score > htf_bear_score + 1 else 'bearish' if htf_bear_score > htf_bull_score + 1 else 'neutral'
+
+        # Volume confirmation
+        vol_confirms = vol_ratio >= 1.2
+        vol_weak = vol_ratio <= 0.7
+
+        # Generate insight text based on conditions
+        text = ""
+        sentiment = "neutral"  # bullish, bearish, neutral, caution
+        confidence = "medium"  # high, medium, low
+
+        # === STRONG CONTINUATION SCENARIOS ===
+        if htf_bias == 'bullish' and ltf_bias == 'bullish':
+            if obv_strength == 'strong' and vol_confirms:
+                text = "Strong bullish momentum. Trend likely to continue across all timeframes."
+                sentiment = "bullish"
+                confidence = "high"
+            elif obv_strength == 'strong':
+                text = "Bullish trend intact. Both timeframes aligned upward."
+                sentiment = "bullish"
+                confidence = "high"
+            else:
+                text = "Uptrend on both timeframes. Momentum supports continuation."
+                sentiment = "bullish"
+                confidence = "medium"
+
+        elif htf_bias == 'bearish' and ltf_bias == 'bearish':
+            if obv_strength == 'strong' and vol_confirms:
+                text = "Strong bearish momentum. Downtrend likely to continue across all timeframes."
+                sentiment = "bearish"
+                confidence = "high"
+            elif obv_strength == 'strong':
+                text = "Bearish trend intact. Both timeframes aligned downward."
+                sentiment = "bearish"
+                confidence = "high"
+            else:
+                text = "Downtrend on both timeframes. Selling pressure persists."
+                sentiment = "bearish"
+                confidence = "medium"
+
+        # === DIVERGENCE / REVERSAL SCENARIOS ===
+        elif obv_div == 'bullish':
+            if htf_bias == 'bearish':
+                text = "Accumulation detected. Local bottom may be forming despite bearish price action."
+                sentiment = "caution"
+                confidence = "medium"
+            else:
+                text = "Hidden accumulation underway. Smart money buying despite price weakness."
+                sentiment = "bullish"
+                confidence = "medium"
+
+        elif obv_div == 'bearish':
+            if htf_bias == 'bullish':
+                text = "Distribution detected. Local top may be forming despite bullish price action."
+                sentiment = "caution"
+                confidence = "medium"
+            else:
+                text = "Hidden distribution underway. Smart money selling despite price strength."
+                sentiment = "bearish"
+                confidence = "medium"
+
+        # === TIMEFRAME CONFLICT SCENARIOS ===
+        elif htf_bias == 'bullish' and ltf_bias == 'bearish':
+            if rsi < 35:
+                text = "Short-term pullback in a bullish market. Potential dip-buying opportunity."
+                sentiment = "caution"
+                confidence = "medium"
+            elif vol_weak:
+                text = "Minor correction on low volume. Higher timeframe still bullish."
+                sentiment = "bullish"
+                confidence = "medium"
+            else:
+                text = "Short-term weakness, but macro trend remains bullish. Watch for bounce."
+                sentiment = "caution"
+                confidence = "medium"
+
+        elif htf_bias == 'bearish' and ltf_bias == 'bullish':
+            if rsi > 65:
+                text = "Relief rally in a bearish market. Potential bull trap - use caution."
+                sentiment = "caution"
+                confidence = "medium"
+            elif vol_weak:
+                text = "Low-volume bounce. Higher timeframe still bearish."
+                sentiment = "bearish"
+                confidence = "medium"
+            else:
+                text = "Short-term strength, but macro trend remains bearish. Watch for rejection."
+                sentiment = "caution"
+                confidence = "medium"
+
+        # === NEUTRAL / CONSOLIDATION SCENARIOS ===
+        elif htf_bias == 'neutral' and ltf_bias == 'neutral':
+            if vol_weak:
+                text = "Low volatility consolidation. Waiting for a breakout signal."
+                sentiment = "neutral"
+                confidence = "low"
+            else:
+                text = "Ranging market. No clear trend direction on either timeframe."
+                sentiment = "neutral"
+                confidence = "low"
+
+        elif htf_bias == 'bullish' and ltf_bias == 'neutral':
+            text = "Macro bullish, short-term consolidating. Likely to continue up after pause."
+            sentiment = "bullish"
+            confidence = "medium"
+
+        elif htf_bias == 'bearish' and ltf_bias == 'neutral':
+            text = "Macro bearish, short-term consolidating. Likely to continue down after pause."
+            sentiment = "bearish"
+            confidence = "medium"
+
+        elif htf_bias == 'neutral' and ltf_bias == 'bullish':
+            text = "Short-term bullish momentum building. Watch for higher timeframe confirmation."
+            sentiment = "caution"
+            confidence = "low"
+
+        elif htf_bias == 'neutral' and ltf_bias == 'bearish':
+            text = "Short-term bearish pressure. Watch for higher timeframe confirmation."
+            sentiment = "caution"
+            confidence = "low"
+
+        # === EXTREME RSI CONDITIONS (override) ===
+        if rsi < 25 and htf_bias != 'bearish':
+            text = "Extremely oversold. Bounce likely in the next 24-48 hours."
+            sentiment = "bullish"
+            confidence = "high"
+        elif rsi > 75 and htf_bias != 'bullish':
+            text = "Extremely overbought. Pullback likely in the next 24-48 hours."
+            sentiment = "bearish"
+            confidence = "high"
+
+        # === FUNDING RATE EXTREMES (additional context) ===
+        if funding_pct > 0.05 and sentiment == 'bullish':
+            text += " Caution: High funding suggests crowded longs."
+            confidence = "medium" if confidence == "high" else confidence
+        elif funding_pct < -0.05 and sentiment == 'bearish':
+            text += " Caution: Negative funding suggests crowded shorts."
+            confidence = "medium" if confidence == "high" else confidence
+
+        # Fallback
+        if not text:
+            text = "Mixed signals. No clear short-term direction."
+            sentiment = "neutral"
+            confidence = "low"
+
+        return {
+            'text': text,
+            'sentiment': sentiment,
+            'confidence': confidence,
+            'ltf_bias': ltf_bias,
+            'htf_bias': htf_bias
+        }
 
     async def scan_all(self) -> List[Dict]:
         results = []
