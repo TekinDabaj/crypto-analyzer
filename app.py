@@ -997,6 +997,210 @@ class MarketAnalyzer:
             logger.error(f"Levels calculation error: {e}")
             return {'supports': [], 'resistances': [], 'poc': None, 'dynamic_levels': [], 'atr': 0, 'atr_pct': 0}
 
+    def get_level_proximity(self, levels: Dict, current_price: float, momentum_sentiment: str) -> Optional[Dict]:
+        """
+        Check if price is near a key support/resistance level.
+        Returns contextual warning text if near a significant level.
+        """
+        if not levels or current_price <= 0:
+            return None
+
+        try:
+            proximity_threshold = 0.02  # 2% proximity
+            warnings = []
+
+            # Check psychological round numbers
+            psych_levels = self._get_psychological_levels(current_price)
+            for psych in psych_levels:
+                dist_pct = abs(current_price - psych['price']) / current_price
+                if dist_pct <= proximity_threshold:
+                    is_above = current_price > psych['price']
+                    warnings.append({
+                        'type': 'psychological',
+                        'price': psych['price'],
+                        'label': psych['label'],
+                        'distance_pct': round(dist_pct * 100, 2),
+                        'position': 'above' if is_above else 'at' if dist_pct < 0.005 else 'below'
+                    })
+
+            # Check resistances (above current price)
+            for res in levels.get('resistances', [])[:2]:  # Top 2 closest
+                dist_pct = (res['price'] - current_price) / current_price
+                if 0 < dist_pct <= proximity_threshold:
+                    warnings.append({
+                        'type': 'resistance',
+                        'price': res['price'],
+                        'strength': res.get('strength', 50),
+                        'touches': res.get('touches', 1),
+                        'distance_pct': round(dist_pct * 100, 2),
+                        'hvn': res.get('hvn', False)
+                    })
+
+            # Check supports (below current price)
+            for sup in levels.get('supports', [])[:2]:  # Top 2 closest
+                dist_pct = (current_price - sup['price']) / current_price
+                if 0 < dist_pct <= proximity_threshold:
+                    warnings.append({
+                        'type': 'support',
+                        'price': sup['price'],
+                        'strength': sup.get('strength', 50),
+                        'touches': sup.get('touches', 1),
+                        'distance_pct': round(dist_pct * 100, 2),
+                        'hvn': sup.get('hvn', False)
+                    })
+
+            if not warnings:
+                return None
+
+            # Generate contextual text based on most significant level
+            return self._generate_level_warning(warnings, current_price, momentum_sentiment)
+
+        except Exception as e:
+            logger.error(f"Level proximity error: {e}")
+            return None
+
+    def _get_psychological_levels(self, current_price: float) -> List[Dict]:
+        """Get nearby psychological round number levels"""
+        levels = []
+
+        # Determine appropriate round numbers based on price magnitude
+        if current_price >= 10000:
+            # BTC-like: $50k, $60k, $100k
+            increments = [10000, 5000, 25000, 50000]
+        elif current_price >= 1000:
+            # ETH-like: $2000, $2500, $3000
+            increments = [500, 1000, 250]
+        elif current_price >= 100:
+            # Mid-caps: $100, $150, $200
+            increments = [50, 100, 25]
+        elif current_price >= 10:
+            # Lower: $10, $15, $20
+            increments = [5, 10, 2.5]
+        elif current_price >= 1:
+            # Sub-$10: $1, $2, $5
+            increments = [1, 0.5, 2]
+        else:
+            # Sub-$1: $0.10, $0.50, $1.00
+            increments = [0.1, 0.05, 0.25, 0.5, 1.0]
+
+        for inc in increments:
+            # Find nearest round numbers
+            lower = (current_price // inc) * inc
+            upper = lower + inc
+
+            for level in [lower, upper]:
+                if level > 0 and abs(current_price - level) / current_price <= 0.05:
+                    # Format label nicely
+                    if level >= 1000:
+                        label = f"${level:,.0f}"
+                    elif level >= 1:
+                        label = f"${level:.2f}" if level % 1 else f"${level:.0f}"
+                    else:
+                        label = f"${level:.4f}".rstrip('0').rstrip('.')
+
+                    # Avoid duplicates
+                    if not any(abs(l['price'] - level) < 0.001 for l in levels):
+                        levels.append({'price': level, 'label': label})
+
+        return levels[:3]  # Return top 3 closest
+
+    def _generate_level_warning(self, warnings: List[Dict], current_price: float, sentiment: str) -> Dict:
+        """Generate human-readable warning text based on nearby levels"""
+
+        # Prioritize: resistance if bullish sentiment, support if bearish
+        resistances = [w for w in warnings if w['type'] == 'resistance']
+        supports = [w for w in warnings if w['type'] == 'support']
+        psychs = [w for w in warnings if w['type'] == 'psychological']
+
+        text = ""
+        level_type = ""
+        level_price = 0
+        strength = 0
+
+        # If bullish and near resistance - warn about potential rejection
+        if sentiment in ('bullish', 'caution') and resistances:
+            res = resistances[0]
+            level_price = res['price']
+            strength = res.get('strength', 50)
+            touches = res.get('touches', 1)
+
+            if res['distance_pct'] < 0.5:
+                text = f"Testing resistance at ${self._format_price(level_price)}"
+                if touches >= 3:
+                    text += f" (tested {touches}x - strong level)"
+            else:
+                text = f"Approaching resistance at ${self._format_price(level_price)}"
+                if touches >= 2:
+                    text += f" (tested {touches}x)"
+
+            text += " - watch for rejection or breakout"
+            level_type = "resistance"
+
+        # If bearish and near support - note potential bounce
+        elif sentiment == 'bearish' and supports:
+            sup = supports[0]
+            level_price = sup['price']
+            strength = sup.get('strength', 50)
+            touches = sup.get('touches', 1)
+
+            if sup['distance_pct'] < 0.5:
+                text = f"Testing support at ${self._format_price(level_price)}"
+                if touches >= 3:
+                    text += f" (tested {touches}x - strong level)"
+            else:
+                text = f"Approaching support at ${self._format_price(level_price)}"
+                if touches >= 2:
+                    text += f" (tested {touches}x)"
+
+            text += " - potential bounce zone"
+            level_type = "support"
+
+        # Near psychological level
+        elif psychs:
+            psych = psychs[0]
+            level_price = psych['price']
+            pos = psych.get('position', 'near')
+
+            if pos == 'above':
+                text = f"Just broke above {psych['label']} - now potential support"
+                level_type = "psychological_support"
+            elif pos == 'at':
+                text = f"At key psychological level {psych['label']}"
+                level_type = "psychological"
+            else:
+                text = f"Approaching psychological level {psych['label']}"
+                level_type = "psychological_resistance"
+
+        # Check support when bullish (good entry zone)
+        elif sentiment in ('bullish', 'caution') and supports:
+            sup = supports[0]
+            level_price = sup['price']
+            strength = sup.get('strength', 50)
+            if sup['distance_pct'] < 1.5:
+                text = f"Near support at ${self._format_price(level_price)} - favorable risk/reward zone"
+                level_type = "support"
+
+        if not text:
+            return None
+
+        return {
+            'text': text,
+            'level_type': level_type,
+            'level_price': level_price,
+            'strength': strength
+        }
+
+    def _format_price(self, price: float) -> str:
+        """Format price for display"""
+        if price >= 1000:
+            return f"{price:,.0f}"
+        elif price >= 1:
+            return f"{price:.2f}"
+        elif price >= 0.01:
+            return f"{price:.4f}"
+        else:
+            return f"{price:.6f}"
+
     def score_coin(self, ind: Dict, funding: float, structure: Dict = None) -> Dict:
         """
         Dynamic scoring using only OBV and Volume as core metrics.
@@ -1170,12 +1374,14 @@ class MarketAnalyzer:
             levels = self.calculate_levels(df_1h, price)
             # Calculate momentum analysis for trend insights (now includes structure)
             momentum = self._analyze_momentum(ind_1h, ind_4h, funding, structure)
+            # Check if price is near key levels
+            level_proximity = self.get_level_proximity(levels, price, momentum.get('sentiment', 'neutral'))
             return {'symbol': symbol, 'display_name': symbol.replace('/USDT', ''), 'timestamp': datetime.utcnow().isoformat(),
                     'price': ind_1h.get('price', 0), 'price_change_24h': ind_1h.get('price_change_24h', 0),
                     'indicators': {'1h': ind_1h, '4h': ind_4h}, 'funding_rate': round(funding * 100, 4),
                     'spot_volume': round(spot['volume'], 0), 'spot_volume_change': round(spot['change'], 1),
                     'futures_volume': round(fv, 0), 'futures_volume_change': round(fvc, 1), 'score': score, 'signals': signals,
-                    'levels': levels, 'momentum': momentum, 'structure': structure}
+                    'levels': levels, 'momentum': momentum, 'structure': structure, 'level_proximity': level_proximity}
         except Exception as e:
             logger.debug(f"Analyze error {symbol}: {e}")
             return None
