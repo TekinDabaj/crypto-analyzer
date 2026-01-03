@@ -485,6 +485,7 @@ class MarketAnalyzer:
         self.rsi_period = 14
         self.cache = {}
         self.cache_duration = 60
+        self.btc_price_change = 0  # Track BTC's 24h change for correlation
         # Dynamic scoring system
         self.market_regime = {
             'trend': 'neutral',      # trending_up, trending_down, ranging
@@ -1372,8 +1373,8 @@ class MarketAnalyzer:
             signals = self._gen_signals(ind_1h, ind_4h, funding)
             # Calculate support/resistance levels
             levels = self.calculate_levels(df_1h, price)
-            # Calculate momentum analysis for trend insights (now includes structure)
-            momentum = self._analyze_momentum(ind_1h, ind_4h, funding, structure)
+            # Calculate momentum analysis for trend insights (now includes structure and BTC correlation)
+            momentum = self._analyze_momentum(ind_1h, ind_4h, funding, structure, symbol)
             # Check if price is near key levels
             level_proximity = self.get_level_proximity(levels, price, momentum.get('sentiment', 'neutral'))
             return {'symbol': symbol, 'display_name': symbol.replace('/USDT', ''), 'timestamp': datetime.utcnow().isoformat(),
@@ -1407,7 +1408,78 @@ class MarketAnalyzer:
         if i1.get('macd_bullish'): s.append("[MACD] Bullish")
         return s if s else ["No signals"]
 
-    def _analyze_momentum(self, i1: Dict, i4: Dict, funding: float, structure: Dict = None) -> Dict:
+    def get_btc_correlation(self, symbol: str, alt_price_change: float) -> Dict:
+        """
+        Calculate how the altcoin is performing relative to BTC.
+        Returns correlation status and contextual text.
+        """
+        # Skip for BTC itself
+        if 'BTC' in symbol:
+            return {'status': 'self', 'text': None, 'relative_perf': 0}
+
+        btc_change = self.btc_price_change
+        alt_change = alt_price_change
+
+        # Calculate relative performance
+        relative_perf = alt_change - btc_change
+
+        # Determine correlation status
+        # Thresholds: significant difference is > 3%
+        if abs(btc_change) < 0.5:
+            # BTC is flat - check if alt is moving independently
+            if alt_change > 3:
+                status = 'independent_bullish'
+                text = f"Moving independently (+{alt_change:.1f}% while BTC flat)"
+            elif alt_change < -3:
+                status = 'independent_bearish'
+                text = f"Selling off independently ({alt_change:.1f}% while BTC flat)"
+            else:
+                status = 'neutral'
+                text = None
+        elif btc_change > 0:
+            # BTC is up
+            if relative_perf > 5:
+                status = 'outperforming'
+                text = f"Outperforming BTC by {relative_perf:.1f}% - strong independent demand"
+            elif relative_perf > 2:
+                status = 'slightly_outperforming'
+                text = f"Slightly outperforming BTC (+{relative_perf:.1f}%)"
+            elif relative_perf < -5:
+                status = 'underperforming'
+                text = f"Underperforming despite bullish market ({relative_perf:.1f}% vs BTC)"
+            elif relative_perf < -2:
+                status = 'slightly_underperforming'
+                text = f"Lagging behind BTC ({relative_perf:.1f}%)"
+            else:
+                status = 'correlated'
+                text = "Tracking BTC movement"
+        else:
+            # BTC is down
+            if relative_perf > 5:
+                status = 'decoupled_bullish'
+                text = f"Decoupled from BTC - showing strength (+{relative_perf:.1f}% vs BTC)"
+            elif relative_perf > 2:
+                status = 'resilient'
+                text = f"Holding up better than BTC (+{relative_perf:.1f}%)"
+            elif relative_perf < -5:
+                status = 'decoupled_bearish'
+                text = f"Dropping harder than BTC ({relative_perf:.1f}%) - weak"
+            elif relative_perf < -2:
+                status = 'slightly_weaker'
+                text = f"Slightly weaker than BTC ({relative_perf:.1f}%)"
+            else:
+                status = 'correlated'
+                text = "Tracking BTC movement"
+
+        return {
+            'status': status,
+            'text': text,
+            'relative_perf': round(relative_perf, 2),
+            'btc_change': round(btc_change, 2),
+            'alt_change': round(alt_change, 2)
+        }
+
+    def _analyze_momentum(self, i1: Dict, i4: Dict, funding: float, structure: Dict = None, symbol: str = None) -> Dict:
         """
         Analyze momentum across timeframes to generate human-readable trend insights.
         Now incorporates market structure for smarter analysis.
@@ -1653,12 +1725,17 @@ class MarketAnalyzer:
             sentiment = "neutral"
             confidence = "low"
 
+        # Calculate BTC correlation for altcoins
+        price_change = i1.get('price_change_24h', 0)
+        correlation = self.get_btc_correlation(symbol or '', price_change)
+
         return {
             'text': text,
             'sentiment': sentiment,
             'confidence': confidence,
             'ltf_bias': ltf_bias,
-            'htf_bias': htf_bias
+            'htf_bias': htf_bias,
+            'btc_correlation': correlation
         }
 
     async def scan_all(self) -> List[Dict]:
@@ -1671,8 +1748,9 @@ class MarketAnalyzer:
                 btc_data = await self.analyze_coin('BTC/USDT')
                 if btc_data:
                     self.detect_market_regime(btc_data)
+                    self.btc_price_change = btc_data.get('price_change_24h', 0)
                     results.append(btc_data)
-                    logger.info(f"Market regime: {self.market_regime['regime_name']} | Weights: OBV {self.market_regime['weights']['obv']}%, Vol {self.market_regime['weights']['volume']}%")
+                    logger.info(f"Market regime: {self.market_regime['regime_name']} | BTC 24h: {self.btc_price_change:+.2f}%")
             except Exception as e:
                 logger.error(f"BTC analysis error: {e}")
 

@@ -201,6 +201,16 @@
     .level-proximity.psychological{border-left-color:#ff9800;background:rgba(255,152,0,0.1);color:#ffb74d}
     .level-proximity-compact{font-size:11px;color:#ffb74d;margin-top:6px;padding-left:2px;display:flex;align-items:center;gap:6px}
     .level-proximity-compact::before{content:"⚠";font-size:12px}
+
+    /* BTC Correlation */
+    .btc-correlation{margin-top:8px;padding:8px 12px;background:rgba(139,92,246,0.1);border-radius:6px;border-left:3px solid #8b5cf6;font-size:12px;color:#a78bfa;display:flex;align-items:center;gap:8px}
+    .btc-correlation.outperforming,.btc-correlation.decoupled_bullish,.btc-correlation.independent_bullish{border-left-color:var(--green);background:rgba(0,214,143,0.1);color:#7fffd4}
+    .btc-correlation.underperforming,.btc-correlation.decoupled_bearish,.btc-correlation.independent_bearish{border-left-color:var(--red);background:rgba(255,77,106,0.1);color:#ffb3be}
+    .btc-correlation.correlated,.btc-correlation.neutral{border-left-color:var(--text-secondary);background:rgba(136,136,170,0.08);color:var(--text-secondary)}
+    .btc-correlation-compact{font-size:11px;color:#a78bfa;margin-top:4px;display:flex;align-items:center;gap:6px}
+    .btc-correlation-compact.outperforming,.btc-correlation-compact.decoupled_bullish{color:#7fffd4}
+    .btc-correlation-compact.underperforming,.btc-correlation-compact.decoupled_bearish{color:#ffb3be}
+    .btc-correlation-compact::before{content:"📊";font-size:10px}
     .table-controls{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:12px;flex-wrap:wrap}
     .search-box{display:flex;align-items:center;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:6px;padding:0 12px}
     .search-box input{background:transparent;border:none;color:var(--text-primary);padding:10px;font-size:13px;width:180px;outline:none}
@@ -609,13 +619,15 @@ function renderTable(coins){
       const m=c.momentum||{text:'Analyzing...',sentiment:'neutral',confidence:'low'};
       const lp=c.level_proximity;
       const lpHtml=lp?'<div class="level-proximity-compact">'+lp.text+'</div>':'';
+      const corr=m.btc_correlation;
+      const corrHtml=(corr&&corr.text&&!c.symbol.includes('BTC'))?'<div class="btc-correlation-compact '+corr.status+'">'+corr.text+'</div>':'';
       return '<tr onclick="showDetail(\''+c.symbol+'\')"><td><div class="coin-cell"><div class="coin-icon">'+c.display_name.slice(0,2)+'</div><div><div class="coin-name">'+c.display_name+'</div><div class="coin-pair">USDT</div></div></div></td>'+
         '<td>$'+fmtPrice(c.price)+'</td><td class="'+(c.price_change_24h>=0?"positive":"negative")+'">'+(c.price_change_24h>0?"+":"")+c.price_change_24h+'%</td>'+
         '<td><div class="obv-cell"><span class="obv-trend '+oc+'">'+i.obv_trend.toUpperCase()+'</span><span class="obv-detail">'+(i.obv_change>0?"+":"")+i.obv_change.toFixed(1)+'%</span></div></td>'+
         '<td>'+c.funding_rate.toFixed(3)+'%</td><td><span class="score-badge '+scoreClass(c.score.grade)+'">'+c.score.grade+'</span></td>'+
         '<td><div class="signals-cell">'+c.signals.slice(0,3).map(s=>'<span class="signal-tag '+sigClass(s)+'">'+s+'</span>').join("")+'</div></td>'+
         '<td><button class="remove-btn" onclick="event.stopPropagation();removeCoin(\''+c.symbol+'\')">Remove</button></td></tr>'+
-        '<tr onclick="showDetail(\''+c.symbol+'\')" class="momentum-row"><td colspan="8"><div class="momentum-compact '+m.sentiment+'">'+m.text+lpHtml+'</div></td></tr>'
+        '<tr onclick="showDetail(\''+c.symbol+'\')" class="momentum-row"><td colspan="8"><div class="momentum-compact '+m.sentiment+'">'+m.text+corrHtml+lpHtml+'</div></td></tr>'
     }).join("")+'</tbody></table>';
 }
 
@@ -882,6 +894,13 @@ function renderDetailView(coin){
       <div class="level-proximity ${coin.level_proximity.level_type}">
         <span class="level-proximity-icon">📍</span>
         <span>${coin.level_proximity.text}</span>
+      </div>
+      `:''}
+      ${(coin.momentum.btc_correlation && coin.momentum.btc_correlation.text && !coin.symbol.includes('BTC'))?`
+      <div class="btc-correlation ${coin.momentum.btc_correlation.status}">
+        <span>📊</span>
+        <span>${coin.momentum.btc_correlation.text}</span>
+        <span style="margin-left:auto;font-size:11px;opacity:0.7">BTC: ${coin.momentum.btc_correlation.btc_change>0?'+':''}${coin.momentum.btc_correlation.btc_change}%</span>
       </div>
       `:''}
     </div>
