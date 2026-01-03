@@ -104,6 +104,11 @@ class HistoricalTracker:
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, symbol TEXT NOT NULL,
                 alert_type TEXT NOT NULL, sent_at TEXT NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users(id))""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS coin_states (
+                user_id INTEGER NOT NULL, symbol TEXT NOT NULL,
+                last_score INTEGER, last_grade TEXT, last_structure TEXT, last_obv_div TEXT,
+                last_updated TEXT, PRIMARY KEY (user_id, symbol),
+                FOREIGN KEY (user_id) REFERENCES users(id))""")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_symbol_date ON coin_snapshots(symbol, date DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_summaries_symbol_date ON daily_summaries(symbol, date DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_user_coins_user ON user_coins(user_id)")
@@ -282,6 +287,30 @@ class HistoricalTracker:
             # Cleanup old alert logs (older than 7 days)
             cutoff = (datetime.utcnow() - timedelta(days=7)).isoformat()
             conn.execute("DELETE FROM sent_alerts WHERE sent_at < ?", (cutoff,))
+
+    def get_coin_state(self, user_id: int, symbol: str) -> Optional[Dict]:
+        """Get the last known state of a coin for a user"""
+        with self.get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM coin_states WHERE user_id = ? AND symbol = ?",
+                (user_id, symbol)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def update_coin_state(self, user_id: int, symbol: str, score: int, grade: str,
+                          structure: str = None, obv_div: str = None):
+        """Update the stored state of a coin for a user"""
+        with self.get_connection() as conn:
+            conn.execute("""
+                INSERT INTO coin_states (user_id, symbol, last_score, last_grade, last_structure, last_obv_div, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, symbol) DO UPDATE SET
+                    last_score = excluded.last_score,
+                    last_grade = excluded.last_grade,
+                    last_structure = excluded.last_structure,
+                    last_obv_div = excluded.last_obv_div,
+                    last_updated = excluded.last_updated
+            """, (user_id, symbol, score, grade, structure, obv_div, datetime.utcnow().isoformat()))
 
 
 class TelegramBot:
@@ -1053,6 +1082,14 @@ class MarketAnalyzer:
             confidence_modifier = min(1.12, confidence_modifier + 0.05)
             structure_status = 'breakdown'
 
+        # Divergence conflict penalty - when divergence contradicts the setup
+        # Bearish divergence in bullish setup = fuel running low, reduce confidence
+        # Bullish divergence in bearish setup = accumulation happening, reduce bearish confidence
+        if od == 'bearish' and (obv_bullish or struct_bullish):
+            confidence_modifier *= 0.92  # Significant penalty - momentum weakening
+        elif od == 'bullish' and (obv_bearish or struct_bearish):
+            confidence_modifier *= 0.95  # Smaller penalty - potential reversal brewing
+
         # Apply modifier
         total = min(100, base_total * confidence_modifier)
 
@@ -1308,27 +1345,6 @@ class MarketAnalyzer:
                 sentiment = "bearish"
                 confidence = "medium"
 
-        # === DIVERGENCE / REVERSAL SCENARIOS ===
-        elif obv_div == 'bullish':
-            if htf_bias == 'bearish':
-                text = "Accumulation detected. Local bottom may be forming despite bearish price action."
-                sentiment = "caution"
-                confidence = "medium"
-            else:
-                text = "Hidden accumulation underway. Smart money buying despite price weakness."
-                sentiment = "bullish"
-                confidence = "medium"
-
-        elif obv_div == 'bearish':
-            if htf_bias == 'bullish':
-                text = "Distribution detected. Local top may be forming despite bullish price action."
-                sentiment = "caution"
-                confidence = "medium"
-            else:
-                text = "Hidden distribution underway. Smart money selling despite price strength."
-                sentiment = "bearish"
-                confidence = "medium"
-
         # === TIMEFRAME CONFLICT SCENARIOS ===
         elif htf_bias == 'bullish' and ltf_bias == 'bearish':
             if rsi < 35:
@@ -1406,6 +1422,24 @@ class MarketAnalyzer:
         elif funding_pct < -0.05 and sentiment == 'bearish':
             text += " Caution: Negative funding suggests crowded shorts."
             confidence = "medium" if confidence == "high" else confidence
+
+        # === DIVERGENCE OVERLAY (smart append based on context) ===
+        if obv_div == 'bearish' and sentiment in ('bullish', 'caution'):
+            # Bearish divergence in bullish/neutral setup - add warning
+            text += " However, volume is not confirming - fuel may be running low."
+            if confidence == "high":
+                confidence = "medium"
+        elif obv_div == 'bearish' and sentiment == 'bearish':
+            # Bearish divergence confirms bearish - strengthen message
+            text += " Distribution confirms the weakness."
+        elif obv_div == 'bullish' and sentiment in ('bearish', 'caution'):
+            # Bullish divergence in bearish setup - potential reversal
+            text += " But smart money appears to be accumulating quietly."
+            if confidence == "high":
+                confidence = "medium"
+        elif obv_div == 'bullish' and sentiment == 'bullish':
+            # Bullish divergence confirms bullish - hidden strength
+            text += " Hidden buying pressure supports the move."
 
         # Fallback
         if not text:
@@ -1638,7 +1672,7 @@ class AnalyzerApp:
             user = self._get_user(request)
             if not user: return JSONResponse({'error': 'Not authenticated'}, status_code=401)
             code = self.tracker.generate_link_code(user['id'])
-            return JSONResponse({'code': code, 'expires_in': '30 minutes', 'bot_username': 'YourCryptoSignalsBot'})
+            return JSONResponse({'code': code, 'expires_in': '30 minutes', 'TekoBot': 'TekoWorld_Bot'})
 
         @self.app.post("/api/alerts/unlink")
         async def unlink_telegram(request: Request):
@@ -1693,7 +1727,7 @@ class AnalyzerApp:
         except Exception as e: logger.error(f"Scan error: {e}")
 
     async def _check_and_send_alerts(self):
-        """Check scan results and send alerts to users who have them enabled"""
+        """Check scan results and send alerts - A+ only, with smart change detection"""
         try:
             users_with_alerts = self.tracker.get_users_for_alerts()
             if not users_with_alerts:
@@ -1709,46 +1743,54 @@ class AnalyzerApp:
 
                 for coin in user_results:
                     symbol = coin['symbol']
+                    score = coin.get('score', {}).get('total_score', 0)
+                    grade = coin.get('score', {}).get('grade', 'F')
+                    struct_break = coin.get('structure', {}).get('structure_break')
+                    obv_div = coin.get('indicators', {}).get('1h', {}).get('obv_divergence', 'none')
+
+                    # Only consider A+ coins (score >= 90)
+                    if score < 90:
+                        # Update state but don't alert
+                        self.tracker.update_coin_state(user_id, symbol, score, grade, struct_break, obv_div)
+                        continue
+
+                    # Get previous state to detect changes
+                    prev_state = self.tracker.get_coin_state(user_id, symbol)
                     alerts_to_send = []
 
-                    # Check for structure break
-                    if user.get('alert_structure_break', 1):
-                        struct_break = coin.get('structure', {}).get('structure_break')
-                        if struct_break:
-                            alert_type = 'structure_break'
-                            if not self.tracker.was_alert_sent_recently(user_id, symbol, alert_type, hours=2):
-                                detail = "Bullish structure break detected!" if struct_break == 'bullish_break' else "Bearish structure break detected!"
-                                alerts_to_send.append((alert_type, detail))
+                    if prev_state is None:
+                        # First time seeing this coin as A+ - send initial alert
+                        if not self.tracker.was_alert_sent_recently(user_id, symbol, 'new_a_plus', hours=6):
+                            alerts_to_send.append(('new_a_plus', f"New A+ signal! Score: {score}"))
+                    else:
+                        prev_grade = prev_state.get('last_grade', 'F')
+                        prev_struct = prev_state.get('last_structure')
+                        prev_obv_div = prev_state.get('last_obv_div', 'none')
 
-                    # Check for divergence
-                    if user.get('alert_divergence', 1):
-                        obv_div = coin.get('indicators', {}).get('1h', {}).get('obv_divergence', 'none')
-                        if obv_div != 'none':
-                            alert_type = 'divergence'
-                            if not self.tracker.was_alert_sent_recently(user_id, symbol, alert_type, hours=4):
-                                detail = "Bullish OBV divergence - potential reversal" if obv_div == 'bullish' else "Bearish OBV divergence - potential top"
-                                alerts_to_send.append((alert_type, detail))
+                        # Check if grade changed TO A+ (was not A+ before)
+                        if prev_grade != 'A+' and grade == 'A+':
+                            if not self.tracker.was_alert_sent_recently(user_id, symbol, 'upgraded_a_plus', hours=4):
+                                alerts_to_send.append(('upgraded_a_plus', f"Upgraded to A+! Score: {score}"))
 
-                    # Check for high confidence momentum
-                    if user.get('alert_high_confidence', 1):
-                        momentum = coin.get('momentum', {})
-                        if momentum.get('confidence') == 'high':
-                            alert_type = 'high_confidence'
-                            if not self.tracker.was_alert_sent_recently(user_id, symbol, alert_type, hours=4):
-                                detail = momentum.get('text', 'High confidence signal detected')
-                                alerts_to_send.append((alert_type, detail))
+                        # Check for NEW structure break (wasn't there before)
+                        if user.get('alert_structure_break', 1):
+                            if struct_break and struct_break != prev_struct:
+                                if not self.tracker.was_alert_sent_recently(user_id, symbol, 'structure_break', hours=4):
+                                    detail = "Bullish structure break!" if struct_break == 'bullish_break' else "Bearish structure break!"
+                                    alerts_to_send.append(('structure_break', detail))
 
-                    # Check for RSI extremes
-                    if user.get('alert_rsi_extreme', 0):
-                        rsi = coin.get('indicators', {}).get('1h', {}).get('rsi', 50)
-                        if rsi < 25 or rsi > 75:
-                            alert_type = 'rsi_extreme'
-                            if not self.tracker.was_alert_sent_recently(user_id, symbol, alert_type, hours=2):
-                                detail = f"RSI extremely oversold ({rsi:.1f})" if rsi < 25 else f"RSI extremely overbought ({rsi:.1f})"
-                                alerts_to_send.append((alert_type, detail))
+                        # Check for NEW divergence (wasn't there before or changed type)
+                        if user.get('alert_divergence', 1):
+                            if obv_div != 'none' and obv_div != prev_obv_div:
+                                if not self.tracker.was_alert_sent_recently(user_id, symbol, 'divergence', hours=6):
+                                    detail = "Bullish OBV divergence detected" if obv_div == 'bullish' else "Bearish OBV divergence - caution"
+                                    alerts_to_send.append(('divergence', detail))
 
-                    # Send alerts
-                    for alert_type, detail in alerts_to_send:
+                    # Update state after checking
+                    self.tracker.update_coin_state(user_id, symbol, score, grade, struct_break, obv_div)
+
+                    # Send alerts (limit to max 2 alerts per coin to avoid spam)
+                    for alert_type, detail in alerts_to_send[:2]:
                         message = self.telegram.format_alert(coin, alert_type, detail)
                         success = await self.telegram.send_message(chat_id, message)
                         if success:

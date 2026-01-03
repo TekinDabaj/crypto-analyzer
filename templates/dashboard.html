@@ -37,9 +37,16 @@
     .dropdown-menu.show{display:block}
     .dropdown-item{padding:10px 14px;font-size:13px;cursor:pointer;display:block;color:var(--text-primary);text-decoration:none}
     .dropdown-item:hover{background:var(--bg-tertiary)}
-    .main{display:grid;grid-template-columns:220px 1fr;min-height:calc(100vh - 58px)}
-    .sidebar{background:var(--bg-secondary);border-right:1px solid var(--border);padding:14px;overflow-y:auto}
-    .section-title{font-size:10px;text-transform:uppercase;color:var(--text-secondary);letter-spacing:1px;margin-bottom:10px;border-left:2px solid var(--purple);padding-left:8px}
+    .main{display:grid;grid-template-columns:220px 1fr;min-height:calc(100vh - 58px);transition:grid-template-columns 0.3s ease}
+    .main.collapsed{grid-template-columns:0px 1fr}
+    .sidebar{background:var(--bg-secondary);border-right:1px solid var(--border);padding:14px;overflow-y:auto;overflow-x:hidden;transition:all 0.3s ease;min-width:220px}
+    .main.collapsed .sidebar{min-width:0;padding:0;border-right:none;opacity:0;pointer-events:none}
+    .section-title{font-size:10px;text-transform:uppercase;color:var(--text-secondary);letter-spacing:1px;margin-bottom:10px;border-left:2px solid var(--purple);padding-left:8px;display:flex;justify-content:space-between;align-items:center}
+    .sidebar-toggle{background:none;border:none;color:var(--text-secondary);cursor:pointer;font-size:14px;padding:2px 6px;border-radius:4px;transition:all 0.2s}
+    .sidebar-toggle:hover{background:var(--bg-tertiary);color:var(--text-primary)}
+    .expand-btn{position:fixed;left:0;top:50%;transform:translateY(-50%);background:var(--bg-secondary);border:1px solid var(--border);border-left:none;border-radius:0 6px 6px 0;padding:12px 6px;cursor:pointer;color:var(--text-secondary);z-index:50;opacity:0;pointer-events:none;transition:all 0.3s ease}
+    .main.collapsed .expand-btn{opacity:1;pointer-events:auto}
+    .expand-btn:hover{background:var(--bg-tertiary);color:var(--text-primary)}
     .stat-card{background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px}
     .stat-label{font-size:10px;color:var(--text-secondary);text-transform:uppercase}
     .stat-value{font-size:20px;font-weight:700}
@@ -346,7 +353,6 @@
       <div class="header-stat"><div class="status-dot"></div><span id="status-text">Live</span></div>
       <div class="header-stat"><span>Scans:</span><strong id="scan-count">0</strong></div>
       <div class="header-stat"><span>Updated:</span><strong id="last-scan">--:--</strong></div>
-      <button class="btn" onclick="triggerScan()">Scan Now</button>
       <div class="dropdown">
         <div class="user-menu" onclick="toggleDropdown()">
           <img class="user-avatar" id="user-avatar" src="" alt="">
@@ -358,9 +364,10 @@
       </div>
     </div>
   </header>
-  <main class="main">
-    <aside class="sidebar">
-      <div class="section-title">Overview</div>
+  <main class="main" id="main-container">
+    <button class="expand-btn" onclick="toggleSidebar()" title="Expand sidebar">›</button>
+    <aside class="sidebar" id="sidebar">
+      <div class="section-title"><span>Overview</span><button class="sidebar-toggle" onclick="toggleSidebar()" title="Collapse sidebar">‹</button></div>
       <div class="stat-card"><div class="stat-label">Your Coins</div><div class="stat-value" id="coins-count">--</div></div>
       <div class="stat-card"><div class="stat-label">High Score (A/B)</div><div class="stat-value positive" id="high-score-count">--</div></div>
       <div class="stat-card"><div class="stat-label">Avg Score</div><div class="stat-value" id="avg-score">--</div></div>
@@ -1234,6 +1241,18 @@ async function unlinkTelegram(){
 
 // Load alert settings on page load
 loadAlertSettings();
+
+// === SIDEBAR COLLAPSE ===
+function toggleSidebar(){
+  const main = document.getElementById('main-container');
+  main.classList.toggle('collapsed');
+  localStorage.setItem('sidebarCollapsed', main.classList.contains('collapsed') ? '1' : '0');
+}
+
+// Restore sidebar state on load
+if(localStorage.getItem('sidebarCollapsed') === '1'){
+  document.getElementById('main-container').classList.add('collapsed');
+}
 
 // Close alert modal on backdrop click
 document.getElementById('alert-modal').addEventListener('click', e => {
